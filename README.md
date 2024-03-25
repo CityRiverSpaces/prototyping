@@ -8,7 +8,6 @@ This repository contains initial prototyping material, such as initial input dat
 Install the Python dependencies in a virtual environments, e.g. using `venv`:
 
 ```
-# Python
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
