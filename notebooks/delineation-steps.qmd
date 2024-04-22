@@ -1,0 +1,116 @@
+---
+title: "Delineation steps"
+format: html
+---
+
+1.  Valley delineation
+
+    -   This is only run when the specific option of cost distance is chosen. In some cases, like flat cities, this might not be helpful and another alternative might be preferred.
+
+    -   Data:
+
+        -   The DEM dataset that is globally available has a 30m resolution. We strart with this. Is this detailed enough? What is globally available is a DSM, not a DTM; is this good enough?
+
+        -   How does this work with flat cities? Is high resolution more needed in those cases? After
+
+        -   Data availability, considering resolution and quality
+
+            -   This is available in the Netherlands and Austria (see [data for Graz](https://fbk.sharepoint.com/:f:/s/BENCHMARKS/Ej5VQ3eFJpBGgfk08k5j1lYBTbr32mr2ZpzyS3lIbDUYHg?e=F3Gp6k), for instance) at a high resolution, DSM and DTM, 0.5m. In Italy, (see [data for Ferrara](https://dati.comune.fe.it/dataset/dtm-2022), for instance) 1m resolution is available. However, this is not the case with other countries.
+
+            -   On European level, 10m is available from EEA/Copernicus. We have to check access to data. We can fall back on this geographic extent if the 30m is not enough.
+
+        -   Why are wetlands are used as input to expand river's active area in the valley? Consider using the OSM tag [nature:wetland](https://wiki.openstreetmap.org/wiki/Tag:natural%3Dwetland)
+
+    -   Algorithm:
+
+        -   [Distance accumulation](https://pro.arcgis.com/en/pro-app/latest/tool-reference/spatial-analyst/distance-accumulation.htm) in ArcGIS, also used in the Vermont Env Agency's delineation method
+
+        -   [A stepwise GIS approach for the delineation of river valley bottom within drainage basins using a cost distance accumulation analysis](https://hess.copernicus.org/preprints/hess-2020-361/) using ArcPy
+
+    -   Output:
+
+        -   Masked raster or polygon?
+
+2.  Corridor edge
+
+    -   Using OSM streets and the municipal boundary, identify the street network running in parallel with the river within a given buffer (default 500m), choosing the outermost continuous line of streets.
+
+    -   Data:
+
+        -   OSM street network, focusing on `motorway`, `primary`, `secondary` and `tertiary`, starting from the highest and adding lower levels only if needed.
+
+        -   River edges (aptions can be added in an optimisation step):
+
+            -   OSM river line or (ideally) polygon
+
+            -   Polygons derived from remotely SAR data (Sentinel-1, no clouds) or optical data (Sentinel-2, higher time resolution) using segmentation algorithm SAM model from Facebook. This might be more useful for spatio-temporal analyses.
+
+        -   For OSM data we use either the Overpass API or an extract, depending on the use case. The API would be used, for instance, in the delineation of a river in one case in a Shiny app. Let's try to be flexible and accommodate both options.
+
+    -   Algorithm:
+
+        -   Alternative ways to calculate the distance to the corridor edge:
+
+            -   Buffer, as the crow flies with the given distance
+
+            -   Distance on the network, Manhattan distance
+
+            -   Cost distance calculated on the raster (this comes from the valley delineation)
+
+            -   The combination of the previous two
+
+        -   the closest parallel continuous line of streets (right outside)
+
+            -   One option is to start from the intersection of the distance lines and the city boundary as origin and destination and calculate the shortest path that is least deviated from the distance lines. We can use [sfnetworks](https://luukvdmeer.github.io/sfnetworks/) for this.
+
+    -   Output:
+
+        -   A polygon of the outer boundary is a product.
+
+3.  Corridor segments
+
+    -   Data:
+
+        -   A corridor boundary polygon
+
+        -   OSM street lines for segmentation
+
+    -   Algorithm:
+
+        -   Use the highest-level transversal streets to cut the corridor resulted from the previous step into segments. What parameter do we need for the size of segments? How to calculate the quality of the results? Maybe calculating some summary stats on the corridor segments (either on morphology or other variables), like surface and confronted wiuth the research question. This can be done in a tutorial as a post-processing use-case-specific step.
+
+        -   Alternative algorithms (to be explored and implemented later):
+
+            -   use a fixed distance along the river for segmentation
+
+            -   use a fixed area or equal areas
+
+    -   Output:
+
+        -   Multiple polygons that add up to the corridor polygon.
+
+4.  River space
+
+    -   Data:
+
+        -   OSM buildings
+
+        -   river edges
+
+        -   corridor boundary to adjust extent
+
+    -   Algorithm:
+
+        -   Using the first row of buildings next to the river and the river edge, determine the continuous space within a 500m buffer. This can be done with a viewshed from equally distanced points along the river edge. this might involve performance issues; optimisation of distance between points might be needed. Extent clipped by corridor boundary.
+
+        -   Optionally, the output can be segmented.
+
+        -   Can be optimised later to include obstacles other than buildings
+
+    -   Output:
+
+        -   One continuous polygon or segmented polygon
+
+Data sources:
+
+-   [MULTI-MODAL GEOSPATIAL AND THEMATIC DATA TO FOSTER GREEN DEAL APPLICATIONS workshop data](https://github.com/3DOM-FBK/USAGE_Geospatial)

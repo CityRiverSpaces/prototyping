@@ -50,3 +50,6 @@ rsconnect/
 
 # Python virtual env
 venv/
+
+# R projects 
+*.Rproj
