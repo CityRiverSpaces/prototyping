@@ -1,5 +1,9 @@
 Imports:
+    geojsonio,
     IRkernel,
+    leaflet,
     osmdata,
     rstac,
+    sfnetworks,
     terra,
+    tidyverse
