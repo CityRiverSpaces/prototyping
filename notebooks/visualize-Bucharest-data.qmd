@@ -1,0 +1,71 @@
+---
+title: "Visualize Bucharest data"
+format: html
+---
+
+```{r}
+library("sf")
+library("leaflet")
+```
+
+# Visualize Bucharest data
+
+Quick visualization of the dataset for Bucharest.
+
+```{r}
+bucharest_vector_path <- "data/CRiSp-data-bucharest.gpkg"
+```
+
+```{r}
+st_layers(bucharest_vector_path)
+```
+
+```{r}
+loadLayer <- function(x) st_read(bucharest_vector_path, layer = x)
+
+# dambovita lines - waterway
+dambovita_l <-  loadLayer("URC-D_dambovita_l_2017") |>
+    st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
+
+# dambovita polygons - areas labelled as water
+dambovita_p <- loadLayer("URC-D_dambovita_p_2017") |>
+    st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
+
+# roads
+roads <- loadLayer("URC-D_roads") |>
+    st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
+
+# corridor segments
+segments <- loadLayer("URC-D_segments")
+
+# valleyedge
+valleyedge <- loadLayer("URC-D_valleyedge_mod")
+
+# buildings
+buildings <- loadLayer("URC-D_buildings") |>
+    st_zm(drop = TRUE, what = "ZM") |>  # drop Z dimension
+    st_set_crs(st_crs(segments))  # the CRS is not set
+```
+
+```{r}
+getGeomLatLong <- function(x) st_transform(x, 4326) |> st_geometry()
+
+groups = c(
+    "roads",
+    "buildings",
+    "water polygons",
+    "water linestrings",
+    "valley edge",
+    "segments"
+)
+
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getGeomLatLong(roads), color = "black", group = groups[1]) |>
+    # addPolygons(data = getGeomLatLong(buildings), color = "magenta", group = groups[2]) |>
+    addPolygons(data = getGeomLatLong(dambovita_p), color = "cyan", group = groups[3]) |>
+    addPolylines(data = getGeomLatLong(dambovita_l), color = "blue", group = groups[4]) |>
+    addPolygons(data = getGeomLatLong(valleyedge), color = "yellow", group = groups[5]) |>
+    addPolygons(data = getGeomLatLong(segments), color = "red", fill = FALSE, group = groups[6]) |>
+    addLayersControl(overlayGroups=groups)
+```

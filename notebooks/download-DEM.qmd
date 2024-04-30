@@ -1,0 +1,62 @@
+---
+title: "Download DEM"
+format: html
+---
+
+```{r}
+library("osmdata")
+library("rstac")
+library("terra")
+```
+
+# Search and download Copernicus DEM data for Bucharest
+
+We use OSM data to define our area of interest (AoI):
+
+```{r}
+bb <- getbb("Bucharest")
+```
+
+The Earth Search STAC catalog lists few open datasets on AWS, including the Copernicus DEM GLO-30 (global, 30m resolution). We query the calalog for the DEM tiles intersecting our AoI:
+
+```{r}
+s_obj <- stac("https://earth-search.aws.element84.com/v1")
+
+it_obj <- s_obj |>
+  stac_search(collections = "cop-dem-glo-30",
+              bbox = as.vector(bb),
+              limit = 100) |>
+  get_request()
+```
+
+We extract the links to the assets - the actual data files:
+
+```{r}
+asset_urls <- rstac::assets_url(it_obj)
+```
+
+Note that the files are openly accessible, but the links are provided as AWS S3 bucket URLs. These can be read directly by GDAL/Terra, but a AWS account needs to be created and [credentials needs to be stored in a configuration file](https://docs.aws.amazon.com/keyspaces/latest/devguide/access.credentials.html).
+
+We now load the raster files, crop them using our AoI, create a mosaic from the tiles and plot the output:
+
+```{r}
+dem <- asset_urls |>
+    lapply(rast) |>
+    lapply(crop, as.vector(t(bb))) |>
+    do.call(merge, args=_)
+```
+
+```{r}
+plot(dem)
+```
+
+Finally, we store the output in a (cloud-optimized) GeoTiff (COG) file:
+
+```{r}
+writeRaster(
+    x = dem,
+    filename = "data/DEM_Bucharest.tif",
+    filetype = "COG",
+    overwrite = TRUE
+)
+```

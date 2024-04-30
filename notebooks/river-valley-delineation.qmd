@@ -1,0 +1,125 @@
+---
+title: "River valley delineation"
+format: html
+---
+
+```{r}
+library("ggplot2")
+library("sf")
+library("terra")
+```
+
+# River valley delineation for Bucharest waterways
+
+
+```{r}
+dem <- rast("../data/DEM_Bucharest.tif")
+rivers <- st_read("../data/OSM_river_multilines.gpkg")
+```
+
+
+```{r}
+dem_df <- as.data.frame(dem, xy=TRUE)  # convert raster to df for plotting
+
+xlim <- c(xmin(dem), xmax(dem))
+ylim <- c(ymin(dem), ymax(dem))
+
+r <- geom_raster(
+    data = dem_df,
+    aes(
+        x = x,
+        y = y,
+        fill = Copernicus_DSM_COG_10_N44_00_E026_00_DEM
+    )
+)
+v <- geom_sf(data = rivers)
+ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
+```
+
+
+```{r}
+utm_crs <- 'epsg:32635'
+dem_repr <- project(dem, utm_crs, method = "near")
+rivers_repr <- st_transform(rivers, crs = utm_crs)
+```
+
+
+```{r}
+slope_rad <- terrain(dem_repr, v = "slope", unit = "radians")
+slope <- tan(slope_rad) * 100  # convert to percentage
+```
+
+
+```{r}
+plot(slope)
+```
+
+
+```{r}
+slope_masked <- mask(
+    slope,
+    ifel(slope <= 1.e-3, NA, 1),
+    updatevalue = 1.e-3
+)
+slope_masked <- mask(
+    slope_masked,
+    rivers_repr,
+    inverse = TRUE,
+    updatevalue = 0,
+    touches = TRUE
+)
+```
+
+
+```{r}
+cd <- costDist(slope_masked, target=0)
+```
+
+
+```{r}
+plot(cd <= 200)
+```
+
+
+```{r}
+st_layers("../data/CRiSp-data-bucharest.gpkg")
+```
+
+
+```{r}
+valley <- st_read("../data/CRiSp-data-bucharest.gpkg", layer = "URC-D_valleyedge_mod")
+```
+
+
+```{r}
+valley_repr <- st_transform(valley, crs = utm_crs)
+```
+
+
+```{r}
+cd_thres_df <- as.data.frame(cd <= 200, xy=TRUE)
+```
+
+
+```{r}
+cd_thres_df <- as.data.frame(cd <= 1500, xy=TRUE)  # convert raster to df for plotting
+
+xlim <- c(xmin(cd), xmax(cd))
+ylim <- c(ymin(cd), ymax(cd))
+
+r <- geom_raster(
+    data = cd_thres_df,
+    aes(
+        x = x,
+        y = y,
+        fill = slope
+    )
+)
+v <- geom_sf(data = valley_repr)
+ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
+```
+
+
+```{r}
+
+```
