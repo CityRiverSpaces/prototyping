@@ -1,7 +1,7 @@
 Imports:
     geojsonio,
-    IRkernel,
     leaflet,
+    lwgeom,
     osmdata,
     rstac,
     sfnetworks,
