@@ -18,7 +18,6 @@ library("tidygraph")
 
 In this notebooks we explore how to delineate river corridor edges using Bucharest as the study area.
 
-
 ```{r}
 # bounding box
 bb <- getbb("Bucharest")
@@ -26,14 +25,12 @@ bb <- getbb("Bucharest")
 
 We focus on one of the rivers and use the following projected CRS for the analysis:
 
-
 ```{r}
 river_name <- "Dâmbovița"
 epsg_code <- 32635  # UTM zone 35N
 ```
 
 A couple of utility functions:
-
 
 ```{r}
 # query the Overpass API for a key:value pair and a bounding box
@@ -45,7 +42,6 @@ osmdata_as_sf <- function(key, value, bb){
 }
 ```
 
-
 ```{r}
 # get geometry in lat/lon (WGS84)
 getGeomLatLon <- function(x) st_transform(x, 4326) |> st_geometry()
@@ -53,42 +49,42 @@ getGeomLatLon <- function(x) st_transform(x, 4326) |> st_geometry()
 
 ## 1. Initial corridor edge
 
-While ideally we want to base the initial estimate of the corridor edge on the basis of the river valley delineation, we use here the roughest approach of defining a buffer region around the waterways. This method could actually be the method of choice for flat cities.
+While ideally we want to base the initial estimate of the corridor edge on the basis of the river valley delineation, we use here the roughest approach of defining a buffer region around the waterways. This method could actually be the method of choice for urban areas with flat topographies.
 
 ### Waterways
 
 Querying the Overpass API for `waterway:river`:
-
 
 ```{r}
 # waterways (linestrings)
 waterways <- osmdata_as_sf("waterway", "river", bb)
 ```
 
+OSM multilines include river lines grouped by the river name. We extract the relevant waterway and transform to the projected CRS:
 
 ```{r}
-waterways$osm_multilines
+waterway <- waterways$osm_multilines |>
+    filter(name == river_name) |>
+    st_transform(epsg_code) |>
+    st_geometry()
 ```
-
-OSM multilines include river lines grouped by the river name.
-
 
 ```{r}
 leaflet() |>
     addTiles() |>
-    addPolylines(data = getGeomLatLon(waterways$osm_multilines), color="blue")
+    addPolylines(data = getGeomLatLon(waterway), color="blue")
 ```
 
 ### Water
 
 Querying the Overpass API for `natural:water`:
 
-
 ```{r}
 # water area (polygons)
 water <- osmdata_as_sf("natural", "water", bb)
 ```
 
+The results of the query with tag `natural:water` also include features such as fountains. The geometries are not contiguous and some part of the water bodies are actually represented as lines instead of polygons:
 
 ```{r}
 leaflet() |>
@@ -99,26 +95,36 @@ leaflet() |>
     addLayersControl(overlayGroups=c("osm_lines", "osm_polygons", "osm_multipolygons"))
 ```
 
-The results of the query with tag `natural:water` also include features such as fountains. The geometries are not contiguous and some part of the water bodies are actually represented as lines instead of polygons. So some more data filtering and cleaning would be required for this tag - using the waterway + buffer for now.
+We determine which features intersect the relevant waterway:
+
+```{r}
+waterbody <- bind_rows(water$osm_polygons, water$osm_multipolygons) |>
+    st_transform(epsg_code) |>
+    st_filter(waterway, .predicate = st_intersects) |>
+    st_geometry() |>
+    st_union()
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getGeomLatLon(waterway), color="blue") |>
+    addPolygons(data = getGeomLatLon(waterbody), color="red")
+```
 
 ### Constructing the initial corridor
 
-In order to buffer, we transform the rivers to the projected CRS:
-
+We construct the initial corridor from the merged geometries of `waterway` and `waterbody`, with a buffer region around them:
 
 ```{r}
 buffer_dist <- 500  # distance (in m) from the water stream
 ```
 
-
 ```{r}
-corridor_initial <- waterways$osm_multilines |>
-    st_transform(epsg_code) |>
+corridor_initial <- c(waterway, waterbody) |>
     st_buffer(buffer_dist) |>
-    filter(name == river_name) |>
-    st_geometry()
+    st_union()
 ```
-
 
 ```{r}
 leaflet() |>
@@ -130,14 +136,12 @@ leaflet() |>
 
 Querying the Overpass API for the `highway` key:
 
-
 ```{r}
 highways_value <- c("motorway", "primary", "secondary", "tertiary")
 highways <- osmdata_as_sf("highway", highways_value, bb)
 ```
 
 We use `sfnetworks` to setup the street network based on the OSM data, mostly following [this tutorial](https://geospatial-community.netlify.app/post/2022-03-31-spatial-networks/) for data cleaning and network setup.
-
 
 ```{r}
 # cast polygons (closed streets) into lines
@@ -147,7 +151,6 @@ highways_lines <- highways$osm_lines |>
     bind_rows(poly_to_lines)
 ```
 
-
 ```{r}
 # create network, only keeping "highway" column
 net <- highways_lines |>
@@ -155,180 +158,196 @@ net <- highways_lines |>
     as_sfnetwork(directed = FALSE)
 ```
 
-
-```{r}
-
-```
-
-
-```{r}
-# filtered <- net |>
-#     activate("nodes") |>
-#     filter(!st_intersects(geometry, corridor_initial |> st_transform(st_crs(net)), sparse = FALSE)) |>
-#     activate("edges") |>
-#     filter(!st_intersects(geometry, corridor_initial |> st_transform(st_crs(net)), sparse = FALSE))
-```
-
-
-```{r}
-# create simple graph (no loops, no double-edge connections)
-# https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#simplify-network
-simple <- filtered |>
-  activate("edges") |>
-  # reorder so that only shortest edge is kept
-  arrange(edge_length()) |>
-  filter(!edge_is_multiple()) |>
-  filter(!edge_is_loop())
-```
-
-
-```{r}
-# subdivide edges (create missing nodes)
-# https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
-subdivision <- convert(simple, to_spatial_subdivision)
-```
-
-
-```{r}
-# smooth pseudo nodes
-# https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
-smoothed <- convert(subdivision, to_spatial_smooth)
-```
-
-
 ```{r}
 getNodes <- function(net) net |> activate("nodes") |> st_geometry()
 getEdges <- function(net) net |> activate("edges") |> st_geometry()
 
 leaflet() |>
     addTiles() |>
-    addPolylines(data = getEdges(smoothed) |> getGeomLatLon(), color = "black") |>
-    addCircles(data = getNodes(smoothed) |> getGeomLatLon(), color = "red") |>
+    addPolylines(data = getEdges(net) |> getGeomLatLon(), color = "black") |>
+    addCircles(data = getNodes(net) |> getGeomLatLon(), color = "red") |>
     addPolygons(data = getGeomLatLon(corridor_initial), color = "blue")
 ```
 
-Finally, convert to projected CRS and calculate weights (= distances) for determining shortest paths:
-
+Finally, convert to projected CRS:
 
 ```{r}
-# add weights
-smoothed <- smoothed |>
-    st_transform(epsg_code) |>
-    activate("edges") |>
-mutate(weight = edge_length())
+net <- net |> st_transform(epsg_code)
 ```
 
 ## 3. Corridor edge delineation
 
-Find the end points:
-
+Define the area of interest (AoI), and split it in two parts using the waterway as separator. The two areas can then be used to :
 
 ```{r}
-# create boundary line using bbox
-# alternative approach: find center and draw circumference at given radius
+# define AoI in the projected CRS
 bbox <- bb |> as.vector()
 names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
-boundary <- st_bbox(bbox, crs = st_crs(4326)) |>
+aoi <- st_bbox(bbox, crs = st_crs(4326)) |>
     st_as_sfc() |>
-    st_boundary() |>
     st_transform(epsg_code)
-```
 
-
-```{r}
-targets <- boundary |>
-    st_intersection(corridor_initial) |>
-    # this is a multilinestring, break down components
-    st_cast("LINESTRING") |>
-    st_centroid()
-```
-
-
-```{r}
-leaflet() |>
-    addTiles() |>
-    # addPolylines(data = getEdges(smoothed) |> getGeomLatLon(), color = "black") |>
-    # addCircles(data = getNodes(smoothed) |> getGeomLatLon(), color = "red") |>
-    addCircles(data = getGeomLatLon(targets), color = "red") |>
-    addPolygons(data = getGeomLatLon(corridor_initial), color = "blue")
-```
-
-
-```{r}
-target_nodes <- st_nearest_feature(targets, getNodes(smoothed))
-```
-
-
-```{r}
-nodes <- getNodes(smoothed)
-
-target_nodes <- c(1, 99)
-
-leaflet() |>
-    addTiles() |>
-    # addPolylines(data = getEdges(smoothed) |> getGeomLatLon(), color = "black") |>
-    # addCircles(data = getNodes(smoothed) |> getGeomLatLon(), color = "red") |>
-    addCircles(data = nodes[target_nodes] |> getGeomLatLon(), color = "red") |>
-    addPolygons(data = getGeomLatLon(corridor_initial), color = "blue")
-```
-
-
-```{r}
-# find shortest path
-paths <- st_network_paths(smoothed, from = target_nodes[1], to = target_nodes[2], weights = "weight")
-```
-
-
-```{r}
-# plot result
-nodes <- getNodes(smoothed)
-node_path <- paths |> pull(node_paths) |> unlist()
-leaflet() |>
-    addTiles() |>
-    addCircles(data = nodes[node_path] |> getGeomLatLon(), color = "red")
-```
-
-## tmp
-
-
-```{r}
 # split the AoI using the waterway
-bbox <- bb |> as.vector()
-names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
-areas <- st_bbox(bbox, crs = st_crs(4326)) |>
-    st_as_sfc() |>
+areas <- aoi |>
     st_split(waterway) |>
     st_collection_extract()
 ```
 
+Determine the "vertices" of the initial river corridor as the intersections of the initial river corridor with the AoI boundary. We will use these points as extremes for the corridor edges:
 
 ```{r}
-?walk
+vertices <- aoi |>
+    st_boundary() |>
+    st_intersection(corridor_initial) |>
+    # this should consists of two linestring components, determine the endpoints
+    st_cast("POINT")
 ```
 
+Consider only one side of the river for now (ideally we will do a mapping for all the steps below to the elements of `areas`)
 
 ```{r}
-plot(a)
+area <- areas[1]
 ```
 
+Trim the street network on the basis of the selected area, also dropping all nodes within the initial corridor. This approach might actually be too "strict", since it makes it impossible for the corridor edges to cross the initially-defined corridor lines (e.g. via the valley edge). An alternative approach that we might pursue could be to define a cost proportional to the distance from the initial corridor edges, to be added to the "weight" of the network edges before looking for the shortest path. The additional cost would ideally try to keep the path as close as possible to the initial corridor edges, while making it possible for the ultimate edge to cross the initial boundaries.
 
 ```{r}
-waterway <- waterways$osm_multilines |>
-    filter(name == river_name) |>
-    st_geometry()
+not_intersects <- function(x, y) !st_intersects(x, y)
+
+trim <- function(net, area, corridor_initial){
+    net |>
+        activate("nodes") |>
+        # select all nodes in the given areas
+        st_filter(area, .predicate = st_intersects) |>
+        # drop all nodes in the initial corridor
+        st_filter(corridor_initial, .predicate = not_intersects)
+}
 ```
 
-
 ```{r}
-st_split
+trimmed <- trim(net, area, corridor_initial)
 ```
 
+We perform standard cleaning tasks on the graph:
 
 ```{r}
-library("lwgeom")
+#' Simplify the graph
+#'
+#' Remove loops and double-edge connections
+#' https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#simplify-network
+simplify <- function(net){
+    net|>
+        activate("edges") |>
+        # reorder the edges so that the shortest is kept
+        arrange(edge_length()) |>
+        filter(!edge_is_multiple()) |>
+        filter(!edge_is_loop())
+}
+
+
+clean <- function(net){
+    net |>
+        simplify() |>
+        # subdivide edges by adding missing nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
+        convert(to_spatial_subdivision) |>
+        # remove pseudo-nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
+        convert(to_spatial_smooth)
+}
 ```
 
+```{r}
+cleaned <- clean(trimmed)
+```
+
+We calculate the weights (= distances) of the edges, will be used to determine the shortest paths between the two vertices
 
 ```{r}
+calc_weights <- function(net){
+    net |>
+        activate("edges") |>
+        mutate(weight = edge_length())
+}
+```
 
+```{r}
+network <- calc_weights(cleaned)
+```
+
+Determine the corridor edge:
+
+```{r}
+get_target_points <- function(vertices, area, threshold = 0.001){
+    vertices |>
+        st_as_sf() |>
+        # keep threshold to check which points  intersect the polygons
+        st_filter(area, .predicate = st_is_within_distance, dist = threshold) |>
+        st_geometry()
+}
+
+get_corridor_edge <- function(network, area, vertices){
+    # determine start and endpoint
+    target_points <- get_target_points(vertices, area)
+
+
+    # find shortest path
+    paths <- st_network_paths(
+        network,
+        from = target_points[1],
+        to = target_points[2],
+        weights = "weight",
+        type = "shortest"
+    )
+
+    edges <- network |> activate("edges") |> st_geometry()
+    edge_path <- paths |> pull(edge_paths) |> unlist()
+    edges[edge_path]
+}
+```
+
+```{r}
+corridor_edge_1 <- get_corridor_edge(network, area, vertices)
+```
+
+Visualize the computed corridor edge:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue")
+```
+
+We run the same steps on the "other side" of the river - but unfortunately the shortest path algorithm does not converge:
+
+```{r}
+area <- areas[2]
+
+corridor_edge_2 <- net |>
+    trim(area, corridor_initial) |>
+    clean() |>
+    calc_weights() |>
+    get_corridor_edge(area, vertices)
+```
+
+Visualizing the network seems to show that the graph is correct. This is also with the "denser" street network, including roads down to tertiary in the hierarchy. Need further investigation:
+
+```{r}
+g <- net |>
+    trim(area, corridor_initial) |>
+    clean() |>
+    calc_weights()
+
+geoms <- g |> activate("nodes") |> st_geometry()
+edges <- getEdges(g)
+
+target_points <- get_target_points(vertices, area)
+closest <- target_points |> st_nearest_feature(geoms)
+
+leaflet() |>
+    addTiles() |>
+    addCircles(data = geoms |> getGeomLatLon()) |>
+    addCircles(data = target_points |> getGeomLatLon(), color = "red") |>
+    addPolylines(data = edges |> getGeomLatLon(), color = "black") |>
+    addCircles(data = geoms[closest]  |> getGeomLatLon(), color = "green")
 ```
