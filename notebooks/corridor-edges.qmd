@@ -348,23 +348,18 @@ leaflet() |>
     addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue")
 ```
 
-We run the same steps on the "other side" of the river - but unfortunately the shortest path algorithm does not converge:
+We run the same steps on the "other side" of the river:
 
 ```{r}
 area <- areas[2]
 
-trimmed <- trim(net, area, corridor_initial)
-cleaned <- clean(trimmed)
-network <- calc_weights(cleaned)  |> 
+network <- trim(net, area, corridor_initial) |> 
+    clean() |> 
+    calc_weights() |> 
     activate("nodes") |> 
-    filter(group_components() == 1)
-corridor_edge_2 <- get_corridor_edge(network, area, vertices)
+    filter(group_components() == 1)  # keep only the main connected component
 
-# corridor_edge_2 <- net |>
-#     trim(area, corridor_initial) |>
-#     clean() |>
-#     calc_weights() |>
-#     get_corridor_edge(area, vertices)
+corridor_edge_2 <- get_corridor_edge(network, area, vertices)
 ```
 
 ```{r}
@@ -372,8 +367,10 @@ leaflet() |>
     addTiles() |>
     addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue") |> 
     addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "green") |> 
-    addPolylines(data = city_boundary |> getGeomLatLon())
+    addPolylines(data = city_boundary |> getGeomLatLon(), color = "orange")
 ```
+
+Finally, we combine the two corridor edges with the municipal boundary:
 
 ```{r}
 corridor <- city_boundary |> 
@@ -389,4 +386,4 @@ leaflet() |>
     addPolylines(data = corridor |> getGeomLatLon(), color = "red")
 ```
 
-
+Note that this is not ideal, as the municipal boundaries can be arbitrary and might exclude important end features of the corridors, so the user should have the option to input their own feature to cap the corridor ends. In the case of Bucharest, this can be the ring road.
