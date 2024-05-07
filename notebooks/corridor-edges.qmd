@@ -91,6 +91,8 @@ waterway <- waterways$osm_multilines |>
     st_transform(epsg_code) |>
     st_geometry() |> 
     st_intersection(st_buffer(bbox, bbox_buffer + 1000))
+
+# st_write(waterway, "../data/generated/waterway.gpkg")
 ```
 
 ```{r}
@@ -183,6 +185,8 @@ poly_to_lines <- highways$osm_polygons |>
 highways_lines <- highways$osm_lines |>
     bind_rows(poly_to_lines) 
     # \> bind_rows(routes)
+
+# st_write(highways_lines, "../data/generated/streets.gpkg")
 ```
 
 ```{r}
@@ -373,6 +377,8 @@ leaflet() |>
 Finally, we combine the two corridor edges with the municipal boundary:
 
 ```{r}
+corridor_edges <- st_union(corridor_edge_1, corridor_edge_2)
+
 corridor <- city_boundary |> 
     st_split(corridor_edges) |> 
     st_collection_extract("POLYGON") |> 
@@ -387,3 +393,8 @@ leaflet() |>
 ```
 
 Note that this is not ideal, as the municipal boundaries can be arbitrary and might exclude important end features of the corridors, so the user should have the option to input their own feature to cap the corridor ends. In the case of Bucharest, this can be the ring road.
+
+```{r}
+# st_write(corridor, dsn = "../data/generated/corridor.gpkg")
+```
+
