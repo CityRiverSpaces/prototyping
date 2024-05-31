@@ -1,0 +1,11 @@
+folium
+geopandas
+jupyterlab
+mapclassify
+matplotlib
+momepy
+numpy
+osmnx
+pandas
+scikit-learn
+shapely
