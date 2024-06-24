@@ -33,10 +33,10 @@ We start by getting the bounding box for the study area.
 bb <- getbb(city_name)
 bbox <- bb |> as.vector()
 names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
-bbox <- st_bbox(bbox, crs = st_crs(4326)) |> 
-    st_as_sfc() |> 
+bbox <- st_bbox(bbox, crs = st_crs(4326)) |>
+    st_as_sfc() |>
     st_transform(epsg_code)
-bbox_expanded <- bbox |> 
+bbox_expanded <- bbox |>
     st_buffer(bbox_buffer)
 ```
 
@@ -61,14 +61,13 @@ getGeomLatLon <- function(x) st_transform(x, 4326) |> st_geometry()
 # get city boundary
 city_boundary <- osmdata_as_sf("place", "city", bb)
 
-city_boundary <- city_boundary$osm_multipolygons |> 
+city_boundary <- city_boundary$osm_multipolygons |>
     st_geometry() |> st_transform(epsg_code)
 
 plot(bbox_expanded, border = "red")
 plot(bbox, add = TRUE, border = "blue")
 plot(city_boundary, add = TRUE, border = "black", col = "white")
 ```
-
 
 ## 1. Initial corridor edge ----
 
@@ -89,7 +88,7 @@ OSM multilines include river lines grouped by the river name. We extract the rel
 waterway <- waterways$osm_multilines |>
     filter(name == river_name) |>
     st_transform(epsg_code) |>
-    st_geometry() |> 
+    st_geometry() |>
     st_intersection(st_buffer(bbox, bbox_buffer + 1000))
 
 # st_write(waterway, "../data/generated/waterway.gpkg")
@@ -158,6 +157,11 @@ leaflet() |>
     addPolygons(data = getGeomLatLon(corridor_initial))
 ```
 
+```{r}
+# save the waterway geometries (string and polygon)
+st_write(c(waterway, waterbody), dsn = sprintf("data/generated/waterway_%s.gpkg", river_name))
+```
+
 ## 2. Street network ----
 
 Querying the Overpass API for the `highway` key:
@@ -177,13 +181,13 @@ We use `sfnetworks` to setup the street network based on the OSM data, mostly fo
 poly_to_lines <- highways$osm_polygons |>
     st_cast("LINESTRING")
 # # include road segments found as route:road in OSM
-# routes <- route$osm_lines |> 
-#     st_intersection(st_transform(bbox_expanded, 4326)) |> 
-#     filter(highway %in% highways_value) |> 
+# routes <- route$osm_lines |>
+#     st_intersection(st_transform(bbox_expanded, 4326)) |>
+#     filter(highway %in% highways_value) |>
 #     st_cast("LINESTRING")
 # combine all features in one data frame
 highways_lines <- highways$osm_lines |>
-    bind_rows(poly_to_lines) 
+    bind_rows(poly_to_lines)
     # \> bind_rows(routes)
 
 # st_write(highways_lines, "../data/generated/streets.gpkg")
@@ -193,7 +197,7 @@ highways_lines <- highways$osm_lines |>
 # create network, only keeping "highway" column
 net <- highways_lines |>
     select("highway") |>
-    as_sfnetwork(directed = FALSE) |> 
+    as_sfnetwork(directed = FALSE) |>
     st_transform(epsg_code)
 ```
 
@@ -206,7 +210,15 @@ leaflet() |>
     addPolylines(data = getEdges(net) |> getGeomLatLon(), color = "black") |>
     addCircles(data = getNodes(net) |> getGeomLatLon(), color = "red") |>
     addPolygons(data = getGeomLatLon(corridor_initial), color = "blue")
+```
 
+```{r}
+# save the street network
+edges <- net |> st_as_sf("edges")
+nodes <- net |> st_as_sf("nodes")
+
+st_write(edges, dsn = sprintf("data/generated/street_network_edges_%s.gpkg", city_name), append = FALSE)
+st_write(nodes, dsn = sprintf("data/generated/street_network_nodes_%s.gpkg", city_name), append = FALSE)
 ```
 
 ## 3. Corridor edge delineation
@@ -277,10 +289,10 @@ clean <- function(net){
         simplify() |>
         # subdivide edges by adding missing nodes
         # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
-        convert(to_spatial_subdivision) |>
+        convert(to_spatial_subdivision, .clean = TRUE) |>
         # remove pseudo-nodes
         # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
-        convert(to_spatial_smooth)
+        convert(to_spatial_smooth, .clean = TRUE)
 }
 ```
 
@@ -304,8 +316,8 @@ network <- calc_weights(cleaned)
 
 ```{r}
 # keep only the main connected component of the network
-network <- network |> 
-    activate("nodes") |> 
+network <- network |>
+    activate("nodes") |>
     filter(group_components() == 1)
 ```
 
@@ -357,10 +369,10 @@ We run the same steps on the "other side" of the river:
 ```{r}
 area <- areas[2]
 
-network <- trim(net, area, corridor_initial) |> 
-    clean() |> 
-    calc_weights() |> 
-    activate("nodes") |> 
+network <- trim(net, area, corridor_initial) |>
+    clean() |>
+    calc_weights() |>
+    activate("nodes") |>
     filter(group_components() == 1)  # keep only the main connected component
 
 corridor_edge_2 <- get_corridor_edge(network, area, vertices)
@@ -369,8 +381,8 @@ corridor_edge_2 <- get_corridor_edge(network, area, vertices)
 ```{r}
 leaflet() |>
     addTiles() |>
-    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue") |> 
-    addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "green") |> 
+    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue") |>
+    addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "green") |>
     addPolylines(data = city_boundary |> getGeomLatLon(), color = "orange")
 ```
 
@@ -379,10 +391,10 @@ Finally, we combine the two corridor edges with the municipal boundary:
 ```{r}
 corridor_edges <- st_union(corridor_edge_1, corridor_edge_2)
 
-corridor <- city_boundary |> 
-    st_split(corridor_edges) |> 
-    st_collection_extract("POLYGON") |> 
-    st_as_sf() |> 
+corridor <- city_boundary |>
+    st_split(corridor_edges) |>
+    st_collection_extract("POLYGON") |>
+    st_as_sf() |>
     st_filter(waterway, .predicate = st_intersects)
 ```
 
@@ -395,6 +407,13 @@ leaflet() |>
 Note that this is not ideal, as the municipal boundaries can be arbitrary and might exclude important end features of the corridors, so the user should have the option to input their own feature to cap the corridor ends. In the case of Bucharest, this can be the ring road.
 
 ```{r}
-# st_write(corridor, dsn = "../data/generated/corridor.gpkg")
+st_write(
+    c(
+        st_geometry(corridor),
+        st_union(corridor_edge_1),
+        st_union(corridor_edge_2)
+    ),
+    dsn = sprintf("data/generated/corridor_%s.gpkg", river_name),
+    append=FALSE,
+)
 ```
-
