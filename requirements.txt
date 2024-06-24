@@ -4,8 +4,9 @@ jupyterlab
 mapclassify
 matplotlib
 momepy
-numpy
+numpy<2
 osmnx
 pandas
 scikit-learn
 shapely
+
