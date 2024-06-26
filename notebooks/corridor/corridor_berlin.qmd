@@ -1,0 +1,452 @@
+---
+title: "Corridor edges"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library("dplyr")
+library("leaflet")
+library("lwgeom")
+library("osmdata")
+library("purrr")
+library("sf")
+library("sfnetworks")
+library("tidygraph")
+```
+
+In this notebooks we explore how to delineate river corridor edges using Berlin as the study area. We focus on the Seine and use a specific projected CRS for the analysis.
+
+```{r}
+city_name <- "Berlin"
+river_name <- "Spree"
+epsg_code <- 32633  # UTM zone 33N
+bbox_buffer <- 2000
+```
+
+We start by getting the bounding box for the study area.
+
+```{r}
+# bounding box
+bb <- getbb(city_name)
+bbox <- bb |> as.vector()
+names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
+bbox <- st_bbox(bbox, crs = st_crs(4326)) |>
+    st_as_sfc() |>
+    st_transform(epsg_code)
+bbox_expanded <- bbox |>
+    st_buffer(bbox_buffer)
+```
+
+A couple of utility functions:
+
+```{r}
+# query the Overpass API for a key:value pair within a given bounding box
+osmdata_as_sf <- function(key, value, bb){
+    bb |>
+        opq() |>
+        add_osm_feature(key = key, value = value) |>
+        osmdata_sf()
+}
+```
+
+```{r}
+# get geometry in lat/lon (WGS84)
+getGeomLatLon <- function(x) st_transform(x, 4326) |> st_geometry()
+```
+```{r}
+# get city boundary
+city_boundary <- osmdata_as_sf("place", "city", bb)
+
+city_boundary <- city_boundary$osm_multipolygons |>
+   st_geometry() |> st_transform(epsg_code)
+
+city_boundary <- city_boundary[2] # consider only Berlin
+```
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolygons(data = getGeomLatLon(bbox_expanded), color = "red") |>
+    addPolygons(data = getGeomLatLon(bbox), color="blue") |>
+    addPolygons(data = getGeomLatLon(city_boundary), color="red")
+
+```
+
+The Spree flows into another river to the West of Berlin - limit bbox, also to the East:
+```{r}
+bbox <- c(13.25, 52.33824, 13.55, 52.67551)
+names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
+bbox <- st_bbox(bbox, crs = st_crs(4326)) |>
+    st_as_sfc() |>
+    st_transform(epsg_code)
+bbox_expanded <- bbox |>
+    st_buffer(bbox_buffer)
+```
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolygons(data = getGeomLatLon(bbox_expanded), color = "red") |>
+    addPolygons(data = getGeomLatLon(bbox), color="blue")
+```
+
+
+## 1. Initial corridor edge ----
+
+While ideally we want to base the initial estimate of the corridor edge on the basis of the river valley delineation, we use here the roughest approach of defining a buffer region around the waterways. This method could actually be the method of choice for urban areas with flat topographies.
+
+### Waterways
+
+Querying the Overpass API for `waterway:river`:
+
+```{r}
+# waterways (linestrings)
+waterways <- osmdata_as_sf("waterway", "river", bb)
+```
+
+OSM multilines include river lines grouped by the river name. We extract the relevant waterway and transform to the projected CRS:
+
+```{r}
+waterway <- waterways$osm_multilines |>
+    filter(name == river_name) |>
+    st_transform(epsg_code) |>
+    st_geometry() |>
+    st_intersection(st_buffer(bbox, bbox_buffer + 1000))
+
+# st_write(waterway, "../data/generated/waterway.gpkg")
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getGeomLatLon(waterway), color="blue") |>
+    addPolygons(data = getGeomLatLon(bbox), color="red")
+```
+
+### Water
+
+Querying the Overpass API for `natural:water`:
+
+```{r}
+# water area (polygons)
+water <- osmdata_as_sf("natural", "water", bb)
+```
+
+The results of the query with tag `natural:water` also include features such as fountains. The geometries are not contiguous and some part of the water bodies are actually represented as lines instead of polygons:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getGeomLatLon(water$osm_lines), color="blue", group="osm_lines") |>
+    addPolygons(data = getGeomLatLon(water$osm_polygons), color="red", group="osm_polygons") |>
+    addPolygons(data = getGeomLatLon(water$osm_multipolygons), color="black", group="osm_multipolygons") |>
+    addLayersControl(overlayGroups=c("osm_lines", "osm_polygons", "osm_multipolygons"))
+```
+
+We determine which features intersect the relevant waterway:
+
+```{r}
+waterbody <- bind_rows(water$osm_polygons, water$osm_multipolygons) |>
+    st_transform(epsg_code) |>
+    st_filter(waterway, .predicate = st_intersects) |>
+    st_geometry() |>
+    st_union()
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getGeomLatLon(waterway), color="blue") |>
+    addPolygons(data = getGeomLatLon(waterbody), color="red")
+```
+
+### Constructing the initial corridor
+
+We construct the initial corridor from the merged geometries of `waterway` and `waterbody`, with a buffer region around them:
+
+```{r}
+buffer_dist <- 500  # distance (in m) from the water stream
+```
+
+```{r}
+corridor_initial <- c(waterway, waterbody) |>
+    st_buffer(buffer_dist) |>
+    st_union()
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolygons(data = getGeomLatLon(corridor_initial))
+```
+
+```{r}
+# save the waterway geometries (string and polygon)
+st_write(c(waterway, waterbody), dsn = sprintf("data/generated/waterway_%s.gpkg", river_name))
+```
+
+## 2. Street network ----
+
+Querying the Overpass API for the `highway` key:
+
+```{r}
+highways_value <- c("motorway", "primary", "secondary", "tertiary")
+highways <- osmdata_as_sf("highway", highways_value, bb)
+
+# route_value <- c("road")
+# route <- osmdata_as_sf("route", route_value, bb)
+```
+
+We use `sfnetworks` to setup the street network based on the OSM data, mostly following [this tutorial](https://geospatial-community.netlify.app/post/2022-03-31-spatial-networks/) for data cleaning and network setup.
+
+```{r}
+# cast polygons (closed streets) into lines
+poly_to_lines <- highways$osm_polygons |>
+    st_cast("LINESTRING")
+# # include road segments found as route:road in OSM
+# routes <- route$osm_lines |>
+#     st_intersection(st_transform(bbox_expanded, 4326)) |>
+#     filter(highway %in% highways_value) |>
+#     st_cast("LINESTRING")
+# combine all features in one data frame
+highways_lines <- highways$osm_lines |>
+    bind_rows(poly_to_lines)
+    # \> bind_rows(routes)
+
+# st_write(highways_lines, "../data/generated/streets.gpkg")
+```
+
+```{r}
+# create network, only keeping "highway" column
+net <- highways_lines |>
+    select("highway") |>
+    as_sfnetwork(directed = FALSE) |>
+    st_transform(epsg_code)
+```
+
+```{r}
+getNodes <- function(net) net |> activate("nodes") |> st_geometry()
+getEdges <- function(net) net |> activate("edges") |> st_geometry()
+
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = getEdges(net) |> getGeomLatLon(), color = "black") |>
+    addCircles(data = getNodes(net) |> getGeomLatLon(), color = "red") |>
+    addPolygons(data = getGeomLatLon(corridor_initial), color = "blue")
+```
+
+```{r}
+# save the street network
+edges <- net |> st_as_sf("edges")
+nodes <- net |> st_as_sf("nodes")
+
+st_write(edges, dsn = sprintf("data/generated/street_network_edges_%s.gpkg", city_name), append = FALSE)
+st_write(nodes, dsn = sprintf("data/generated/street_network_nodes_%s.gpkg", city_name), append = FALSE)
+```
+
+## 3. Corridor edge delineation
+
+Define the area of interest (AoI), and split it in two parts using the waterway as separator. The two areas can then be used to :
+
+```{r}
+# split the AoI using the waterway
+areas <- bbox_expanded |>
+    st_split(waterway) |>
+    st_collection_extract()
+```
+
+Actually the area can be fragmented into multiple arease:
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = areas |> getGeomLatLon(), color = "blue")
+```
+
+Determine the "vertices" of the initial river corridor as the intersections of the initial river corridor with the AoI boundary. We will use these points as extremes for the corridor edges:
+
+```{r}
+vertices <- bbox |>
+    st_boundary() |>
+    st_intersection(corridor_initial) |>
+    # this should consists of two linestring components, determine the endpoints
+    st_cast("POINT")
+```
+ik8
+Consider only one side of the river for now (ideally we will do a mapping for all the steps below to the elements of `areas`)
+
+```{r}
+area <- areas[1]
+```
+
+Trim the street network on the basis of the selected area, also dropping all nodes within the initial corridor. This approach might actually be too "strict", since it makes it impossible for the corridor edges to cross the initially-defined corridor lines (e.g. via the valley edge). An alternative approach that we might pursue could be to define a cost proportional to the distance from the initial corridor edges, to be added to the "weight" of the network edges before looking for the shortest path. The additional cost would ideally try to keep the path as close as possible to the initial corridor edges, while making it possible for the ultimate edge to cross the initial boundaries.
+
+```{r}
+not_intersects <- function(x, y) !st_intersects(x, y)
+
+trim <- function(net, area, corridor_initial){
+    net |>
+        activate("nodes") |>
+        # select all nodes in the given areas
+        st_filter(area, .predicate = st_intersects) |>
+        # drop all nodes in the initial corridor
+        st_filter(corridor_initial, .predicate = not_intersects)
+}
+```
+
+```{r}
+trimmed <- trim(net, area, corridor_initial)
+```
+
+We perform standard cleaning tasks on the graph:
+
+```{r}
+#' Simplify the graph
+#'
+#' Remove loops and double-edge connections
+#' https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#simplify-network
+simplify <- function(net){
+    net|>
+        activate("edges") |>
+        # reorder the edges so that the shortest is kept
+        arrange(edge_length()) |>
+        filter(!edge_is_multiple()) |>
+        filter(!edge_is_loop())
+}
+
+
+clean <- function(net){
+    net |>
+        simplify() |>
+        # subdivide edges by adding missing nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
+        convert(to_spatial_subdivision, .clean = TRUE) |>
+        # remove pseudo-nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
+        convert(to_spatial_smooth, .clean = TRUE)
+}
+```
+
+```{r}
+cleaned <- clean(trimmed)
+```
+
+We calculate the weights (= distances) of the edges, will be used to determine the shortest paths between the two vertices
+
+```{r}
+calc_weights <- function(net){
+    net |>
+        activate("edges") |>
+        mutate(weight = edge_length())
+}
+```
+
+```{r}
+network <- calc_weights(cleaned)
+```
+
+```{r}
+# keep only the main connected component of the network
+network <- network |>
+    activate("nodes") |>
+    filter(group_components() == 1)
+```
+
+Determine the corridor edge:
+
+```{r}
+get_target_points <- function(vertices, area, threshold = 0.0001){
+    vertices |>
+        st_as_sf() |>
+        # keep threshold to check which points  intersect the polygons
+        st_filter(area, .predicate = st_is_within_distance, dist = threshold) |>
+        st_geometry()
+}
+
+get_corridor_edge <- function(network, area, vertices){
+    # determine start and endpoint
+    target_points <- get_target_points(vertices, area)
+
+
+    # find shortest path
+    paths <- st_network_paths(
+        network,
+        from = target_points[1],
+        to = target_points[2],
+        weights = "weight",
+        type = "shortest"
+    )
+
+    edges <- network |> activate("edges") |> st_geometry()
+    edge_path <- paths |> pull(edge_paths) |> unlist()
+    edges[edge_path]
+}
+```
+
+```{r}
+corridor_edge_1 <- get_corridor_edge(network, area, vertices)
+```
+
+Visualize the computed corridor edge:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue")
+```
+
+We run the same steps on the "other side" of the river:
+
+```{r}
+area <- areas[2]
+
+network <- trim(net, area, corridor_initial) |>
+    clean() |>
+    calc_weights() |>
+    activate("nodes") |>
+    filter(group_components() == 1)  # keep only the main connected component
+
+corridor_edge_2 <- get_corridor_edge(network, area, vertices)
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue") |>
+    addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "green") |>
+    addPolylines(data = bbox |> getGeomLatLon(), color = "orange")
+    # addPolylines(data = city_boundary |> getGeomLatLon(), color = "orange")
+```
+
+Finally, we combine the two corridor edges with the municipal boundary:
+
+```{r}
+corridor_edges <- st_union(corridor_edge_1, corridor_edge_2)
+
+# corridor <- city_boundary |>
+corridor <- bbox |>
+    st_split(corridor_edges) |>
+    st_collection_extract("POLYGON") |>
+    st_as_sf() |>
+    st_filter(waterway, .predicate = st_intersects)
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = corridor |> getGeomLatLon(), color = "red")
+```
+
+Note that this is not ideal, as the municipal boundaries can be arbitrary and might exclude important end features of the corridors, so the user should have the option to input their own feature to cap the corridor ends. In the case of Bucharest, this can be the ring road.
+
+```{r}
+st_write(
+    c(
+        st_geometry(corridor),
+        st_union(corridor_edge_1),
+        st_union(corridor_edge_2)
+    ),
+    dsn = sprintf("data/generated/corridor_%s.gpkg", river_name),
+    append=FALSE,
+)
+```
