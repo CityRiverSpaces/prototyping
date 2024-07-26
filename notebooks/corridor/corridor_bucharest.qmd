@@ -159,7 +159,7 @@ leaflet() |>
 
 ```{r}
 # save the waterway geometries (string and polygon)
-st_write(c(waterway, waterbody), dsn = sprintf("data/generated/waterway_%s.gpkg", river_name))
+st_write(c(waterway, waterbody), dsn = sprintf("data/generated/waterway_%s.gpkg", river_name), append = FALSE)
 ```
 
 ## 2. Street network ----
