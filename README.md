@@ -7,6 +7,7 @@ This repository contains initial prototyping material, such as initial input dat
 
 ### R
 
+R (version 4.4) should be installed (see e.g. instructions on [CRAN](https://cran.r-project.org)). 
 Setup the R environment using `renv` from the lock file:
 
 ```shell
