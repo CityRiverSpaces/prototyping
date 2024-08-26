@@ -11,12 +11,15 @@ library("terra")
 
 # River valley delineation for Bucharest waterways
 
+Load input files: raster DEM and multilinestrings representing the waterway:
 
 ```{r}
-dem <- rast("../data/DEM_Bucharest.tif")
-rivers <- st_read("../data/OSM_river_multilines.gpkg")
+dem <- rast("data/DEM_Bucharest.tif")
+river <- st_read("data/CRiSp-data-bucharest.gpkg", layer = "URC-D_dambovita_l_2017") |>
+    st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
 ```
 
+Visualize DEM:
 
 ```{r}
 dem_df <- as.data.frame(dem, xy=TRUE)  # convert raster to df for plotting
@@ -32,17 +35,19 @@ r <- geom_raster(
         fill = Copernicus_DSM_COG_10_N44_00_E026_00_DEM
     )
 )
-v <- geom_sf(data = rivers)
+v <- geom_sf(data = river)
 ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
 ```
 
+Reproject both DEM and waterway to projected CRS (in m):
 
 ```{r}
 utm_crs <- 'epsg:32635'
 dem_repr <- project(dem, utm_crs, method = "near")
-rivers_repr <- st_transform(rivers, crs = utm_crs)
+river_repr <- st_transform(river, crs = utm_crs)
 ```
 
+Compute slope and convert it to percentage:
 
 ```{r}
 slope_rad <- terrain(dem_repr, v = "slope", unit = "radians")
@@ -54,6 +59,7 @@ slope <- tan(slope_rad) * 100  # convert to percentage
 plot(slope)
 ```
 
+Set the slope to zero for the pixels overlapping the waterway. These values will be used as "targets" in the calculation of the cost distance:
 
 ```{r}
 slope_masked <- mask(
@@ -70,36 +76,27 @@ slope_masked <- mask(
 )
 ```
 
+Use the `costDist` function from `terra` to compute the cost distance from the target cells (cells with value equal to zero):
 
 ```{r}
 cd <- costDist(slope_masked, target=0)
 ```
 
+Visualize the mask generated using a (random) threshold applied to the computed cost distance:
 
 ```{r}
 plot(cd <= 200)
 ```
 
+Load the valley edge used in the previous study and reproject it:
 
 ```{r}
-st_layers("../data/CRiSp-data-bucharest.gpkg")
-```
-
-
-```{r}
-valley <- st_read("../data/CRiSp-data-bucharest.gpkg", layer = "URC-D_valleyedge_mod")
-```
-
-
-```{r}
+st_layers("data/CRiSp-data-bucharest.gpkg")
+valley <- st_read("data/CRiSp-data-bucharest.gpkg", layer = "URC-D_valleyedge_mod")
 valley_repr <- st_transform(valley, crs = utm_crs)
 ```
 
-
-```{r}
-cd_thres_df <- as.data.frame(cd <= 200, xy=TRUE)
-```
-
+Compare current result with previous valley edge:
 
 ```{r}
 cd_thres_df <- as.data.frame(cd <= 1500, xy=TRUE)  # convert raster to df for plotting
@@ -117,9 +114,4 @@ r <- geom_raster(
 )
 v <- geom_sf(data = valley_repr)
 ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
-```
-
-
-```{r}
-
 ```
