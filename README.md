@@ -15,7 +15,7 @@ Rscript -e "install.packages('renv')"
 Rscript -e "renv::restore()"
 ```
 
-or "from scratch" using the dependencies in the `DESCRIPTION` file:
+or "from scratch" using the dependencies in the `DESCRIPTION` file (note that the `renv.lock` file needs to be removed):
 
 ```
 Rscript -e "renv::init(bare=TRUE)"
