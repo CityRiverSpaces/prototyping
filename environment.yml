@@ -1,0 +1,29 @@
+name: crisp
+channels:
+ - conda-forge
+ - r
+dependencies:
+ # Python dependencies
+ - python=3.10
+ - folium
+ - geopandas
+ - jupyterlab
+ - mapclassify
+ - matplotlib
+ - momepy
+ - numpy<2
+ - osmnx
+ - pandas
+ - scikit-learn
+ - shapely
+ # R dependencies
+ - r
+ - r-dbscan
+ - r-geojsonio
+ - r-leaflet
+ - r-lwgeom
+ - r-osmdata
+ - r-rstac
+ - r-sfnetworks
+ - r-terra
+ - r-tidyverse 
