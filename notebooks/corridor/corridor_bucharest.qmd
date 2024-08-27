@@ -441,9 +441,9 @@ add_node_id <- function(net){
 }
 
 # add node distance to nodes
-add_node_dist <- function(net){
+add_node_dist <- function(net, buffer){
     nodes <- getNodes(net)
-    distances <- st_distance(nodes, corridor_initial, which = "Euclidean")
+    distances <- st_distance(nodes, buffer, which = "Euclidean")
     net |>
         activate("nodes") |>
         mutate(node_dist = distances)
@@ -487,7 +487,7 @@ area <- areas[1]
 network <- trim(net, area, corridor_initial) |>
     clean() |>
     add_node_id() |>
-    add_node_dist() |>
+    add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
     calc_weights_sum() |>
@@ -504,7 +504,7 @@ area <- areas[2]
 network <- trim(net, area, corridor_initial) |>
     clean() |>
     add_node_id() |>
-    add_node_dist() |>
+    add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
     calc_weights_sum() |>
