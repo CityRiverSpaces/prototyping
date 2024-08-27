@@ -21,6 +21,11 @@ library("units")
 In this notebooks we explore how to delineate river corridor edges using Bucharest as the study area. We focus on one of the rivers and use a specific projected CRS for the analysis. Also, we make sure that we include a given area around the city boundaries.
 
 ```{r}
+# define a directory to store some outputs
+output_dir = "."
+```
+
+```{r}
 city_name <- "Bucharest"
 river_name <- "Dâmbovița"
 epsg_code <- 32635  # UTM zone 35N
@@ -92,7 +97,7 @@ waterway <- waterways$osm_multilines |>
     st_geometry() |>
     st_intersection(st_buffer(bbox, bbox_buffer + 1000))
 
-# st_write(waterway, "../data/generated/waterway.gpkg")
+# st_write(waterway, sprintf("%s/waterway.gpkg", output_dir))
 ```
 
 ```{r}
@@ -160,7 +165,10 @@ leaflet() |>
 
 ```{r}
 # save the waterway geometries (string and polygon)
-st_write(c(waterway, waterbody), dsn = sprintf("../data/generated/waterway_%s.gpkg", river_name), append = FALSE)
+st_write(
+    c(waterway, waterbody),
+    dsn = sprintf("%s/waterway_%s.gpkg", output_dir, river_name), append = FALSE
+    )
 ```
 
 ## 2. Street network ----
@@ -191,7 +199,7 @@ highways_lines <- highways$osm_lines |>
     bind_rows(poly_to_lines)
     # \> bind_rows(routes)
 
-# st_write(highways_lines, "../data/generated/streets.gpkg")
+# st_write(highways_lines, sprintf("%s/streets.gpkg", output_dir))
 ```
 
 ```{r}
@@ -218,8 +226,8 @@ leaflet() |>
 edges <- net |> st_as_sf("edges")
 nodes <- net |> st_as_sf("nodes")
 
-st_write(edges, dsn = sprintf("../data/generated/street_network_edges_%s.gpkg", city_name), append = FALSE)
-st_write(nodes, dsn = sprintf("../data/generated/street_network_nodes_%s.gpkg", city_name), append = FALSE)
+st_write(edges, dsn = sprintf("%s/street_network_edges_%s.gpkg", output_dir, city_name), append = FALSE)
+st_write(nodes, dsn = sprintf("%s/street_network_nodes_%s.gpkg", output_dir, city_name), append = FALSE)
 ```
 
 ## 3. Corridor edge delineation
@@ -415,7 +423,7 @@ st_write(
         st_union(corridor_edge_1),
         st_union(corridor_edge_2)
     ),
-    dsn = sprintf("../data/generated/corridor_%s.gpkg", river_name),
+    dsn = sprintf("%s/corridor_%s.gpkg", output_dir, river_name),
     append=FALSE,
 )
 ```
@@ -473,7 +481,7 @@ calc_weights_sum <- function(net){
 ```
 
 ```{r}
-# apply all function for fisrt subset
+# apply all function to the fisrt subset
 area <- areas[1]
 
 network <- trim(net, area, corridor_initial) |>
@@ -490,7 +498,7 @@ corridor_edge_1_sum <- get_corridor_edge(network, area, vertices)
 ```
 
 ```{r}
-# apply all function for second subset
+# apply all function to the second subset
 area <- areas[2]
 
 network <- trim(net, area, corridor_initial) |>
