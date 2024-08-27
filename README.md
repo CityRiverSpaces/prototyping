@@ -22,6 +22,14 @@ Rscript -e "renv::init(bare=TRUE)"
 Rscript -e "renv::install()"
 ```
 
+**Note for Linux users:** By default, R will install packages from the CRAN repository, which, unfortunately, does not maintain Linux binaries. The commands above will thus build packages from source, taking a very long time to complete (and potentially raising issues with missing system libraries). Instead, one can instruct R to install packages from the RStudio package manager (Posit), which includes binaries for Linux distributions. On [this web page](https://packagemanager.posit.co/client/#/repos/cran/setup?r_environment=other) select the Linux distribution, then copy the following lines  to the `.Rprofile` file, replacing the URL below with the one formatted under "Repository URL":
+
+```R
+options(repos = c(CRAN = "https://packagemanager.posit.co/cran/__linux__/XXXXXXX/latest"))
+```
+
+Place the `.Rprofile` file in the project root folder (or in your home directory to add the option for all user projects).  
+
 ### Python
 
 Setup the Python environment using `venv`:
