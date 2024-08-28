@@ -430,7 +430,7 @@ st_write(
 
 ### Define some functions to calculate a different weight
 
-Here, the distance from the initial corridor edges is added to the edge length as "weight" of the network edges before looking for the shortest path. The additional cost would ideally try to keep the path as close as possible to the initial corridor edges.
+In this approach, the distance from the initial corridor edges is incorporated into the edge length as a "weight" before calculating the shortest path. This added cost encourages the path to stay as close as possible to the initial corridor. When comparing two edges of the same length, the edge closer to the initial corridor is preferred, as its nodes have smaller distances to the corridor. Conversely, when comparing edges with equal distances to the corridor, the one with the shorter length is selected. Therefore, the "weight" of an edge is determined by its length plus the sum of its distances from the corridor.
 
 ```{r}
 # add id to nodes
