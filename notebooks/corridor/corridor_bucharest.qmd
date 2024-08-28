@@ -468,7 +468,10 @@ add_node_dist_sum <- function(net) {
         }) |> unlist())
 }
 
-# calculate weights; here sum
+# calculate weights; here Length + Distance
+# note that there are different ways to caclulate weights, for example
+# one can give more importance to Distance by Length + 2 * Distance
+# or one can use only Distance.
 calc_weights_sum <- function(net){
     net |>
         activate("edges") |>
