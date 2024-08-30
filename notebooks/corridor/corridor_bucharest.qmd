@@ -433,13 +433,6 @@ st_write(
 In this approach, the distance from the initial corridor edges is incorporated into the edge length as a "weight" before calculating the shortest path. This added cost encourages the path to stay as close as possible to the initial corridor. When comparing two edges of the same length, the edge closer to the initial corridor is preferred, as its nodes have smaller distances to the corridor. Conversely, when comparing edges with equal distances to the corridor, the one with the shorter length is selected. Therefore, the "weight" of an edge is determined by its length plus the sum of its distances from the corridor.
 
 ```{r}
-# add id to nodes
-add_node_id <- function(net){
-    net |>
-        activate("nodes") |>
-        mutate(node_id = row_number())
-}
-
 # add node distance to nodes
 add_node_dist <- function(net, buffer){
     nodes <- getNodes(net)
@@ -489,7 +482,6 @@ area <- areas[1]
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
-    add_node_id() |>
     add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
@@ -506,7 +498,6 @@ area <- areas[2]
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
-    add_node_id() |>
     add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
