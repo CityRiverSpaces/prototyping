@@ -463,15 +463,15 @@ add_node_dist_sum <- function(net) {
 
 # calculate weights; here Length + Distance
 # note that there are different ways to caclulate weights, for example
-# one can give more importance to Distance by Length + 2 * Distance
+# one can give more importance to Distance by 0.2 * Length + 0.8 * Distance
 # or one can use only Distance.
-calc_weights_sum <- function(net){
+calc_weights_sum <- function(net, dist_weight){
     net |>
         activate("edges") |>
         mutate(
             edge_length = set_units(edge_length, "m"),
             nodes_dist_sum = set_units(nodes_dist_sum, "m"),
-            weight = edge_length + nodes_dist_sum
+            weight = (1. - dist_weight) * edge_length + dist_weight * nodes_dist_sum
             )
 }
 ```
@@ -479,13 +479,14 @@ calc_weights_sum <- function(net){
 ```{r}
 # apply all function to the fisrt subset
 area <- areas[1]
+dist_weight <- 0.5
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
     add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
-    calc_weights_sum() |>
+    calc_weights_sum(dist_weight) |>
     activate("nodes") |>
     filter(group_components() == 1)  # keep only the main connected component
 
@@ -495,13 +496,14 @@ corridor_edge_1_sum <- get_corridor_edge(network, area, vertices)
 ```{r}
 # apply all function to the second subset
 area <- areas[2]
+dist_weight <- 0.5
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
     add_node_dist(corridor_initial) |>
     add_edge_length() |>
     add_node_dist_sum() |>
-    calc_weights_sum() |>
+    calc_weights_sum(dist_weight) |>
     activate("nodes") |>
     filter(group_components() == 1)  # keep only the main connected component
 
