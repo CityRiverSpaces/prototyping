@@ -433,15 +433,6 @@ st_write(
 In this approach, the distance from the initial corridor edges is incorporated into the edge length as a "weight" before calculating the shortest path. This added cost encourages the path to stay as close as possible to the initial corridor. When comparing two edges of the same length, the edge closer to the initial corridor is preferred, as its nodes have smaller distances to the corridor. Conversely, when comparing edges with equal distances to the corridor, the one with the shorter length is selected. Therefore, the "weight" of an edge is determined by its length plus the sum of its distances from the corridor.
 
 ```{r}
-# add node distance to nodes
-add_node_dist <- function(net, buffer){
-    nodes <- getNodes(net)
-    distances <- st_distance(nodes, buffer, which = "Euclidean")
-    net |>
-        activate("nodes") |>
-        mutate(node_dist = distances)
-}
-
 # add edge_length to edges
 add_edge_length <- function(net){
     net |>
@@ -449,16 +440,12 @@ add_edge_length <- function(net){
         mutate(edge_length = edge_length())
 }
 
-# add sum of distances to each edge
-add_node_dist_sum <- function(net) {
+add_edge_dist <- function(net, buffer){
+    edges <- getEdges(net)
+    distances <- st_distance(edges, buffer, which = "Euclidean")
     net |>
         activate("edges") |>
-        mutate(nodes_dist_sum = map2(from, to, function(from_node, to_node) {
-        node_dist_values <- activate(net, "nodes") %>%
-            slice(c(from_node, to_node)) %>%
-            pull(node_dist)
-        return(sum(node_dist_values, na.rm = TRUE))
-        }) |> unlist())
+        mutate(edge_distance = distances)
 }
 
 # calculate weights; here Length + Distance
@@ -470,8 +457,8 @@ calc_weights_sum <- function(net, dist_weight){
         activate("edges") |>
         mutate(
             edge_length = set_units(edge_length, "m"),
-            nodes_dist_sum = set_units(nodes_dist_sum, "m"),
-            weight = (1. - dist_weight) * edge_length + dist_weight * nodes_dist_sum
+            edge_distance = set_units(edge_distance, "m"),
+            weight = (1. - dist_weight) * edge_length + dist_weight * edge_distance
             )
 }
 ```
@@ -483,9 +470,8 @@ dist_weight <- 0.5
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
-    add_node_dist(corridor_initial) |>
     add_edge_length() |>
-    add_node_dist_sum() |>
+    add_edge_dist(corridor_initial) |>
     calc_weights_sum(dist_weight) |>
     activate("nodes") |>
     filter(group_components() == 1)  # keep only the main connected component
@@ -500,9 +486,8 @@ dist_weight <- 0.5
 
 network <- trim(net, area, corridor_initial) |>
     clean() |>
-    add_node_dist(corridor_initial) |>
     add_edge_length() |>
-    add_node_dist_sum() |>
+    add_edge_dist(corridor_initial) |>
     calc_weights_sum(dist_weight) |>
     activate("nodes") |>
     filter(group_components() == 1)  # keep only the main connected component
