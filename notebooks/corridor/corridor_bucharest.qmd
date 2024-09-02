@@ -15,9 +15,15 @@ library("purrr")
 library("sf")
 library("sfnetworks")
 library("tidygraph")
+library("units")
 ```
 
 In this notebooks we explore how to delineate river corridor edges using Bucharest as the study area. We focus on one of the rivers and use a specific projected CRS for the analysis. Also, we make sure that we include a given area around the city boundaries.
+
+```{r}
+# define a directory to store some outputs
+output_dir = "."
+```
 
 ```{r}
 city_name <- "Bucharest"
@@ -91,7 +97,7 @@ waterway <- waterways$osm_multilines |>
     st_geometry() |>
     st_intersection(st_buffer(bbox, bbox_buffer + 1000))
 
-# st_write(waterway, "../data/generated/waterway.gpkg")
+# st_write(waterway, sprintf("%s/waterway.gpkg", output_dir))
 ```
 
 ```{r}
@@ -159,7 +165,10 @@ leaflet() |>
 
 ```{r}
 # save the waterway geometries (string and polygon)
-st_write(c(waterway, waterbody), dsn = sprintf("data/generated/waterway_%s.gpkg", river_name), append = FALSE)
+st_write(
+    c(waterway, waterbody),
+    dsn = sprintf("%s/waterway_%s.gpkg", output_dir, river_name), append = FALSE
+    )
 ```
 
 ## 2. Street network ----
@@ -190,7 +199,7 @@ highways_lines <- highways$osm_lines |>
     bind_rows(poly_to_lines)
     # \> bind_rows(routes)
 
-# st_write(highways_lines, "../data/generated/streets.gpkg")
+# st_write(highways_lines, sprintf("%s/streets.gpkg", output_dir))
 ```
 
 ```{r}
@@ -217,8 +226,8 @@ leaflet() |>
 edges <- net |> st_as_sf("edges")
 nodes <- net |> st_as_sf("nodes")
 
-st_write(edges, dsn = sprintf("data/generated/street_network_edges_%s.gpkg", city_name), append = FALSE)
-st_write(nodes, dsn = sprintf("data/generated/street_network_nodes_%s.gpkg", city_name), append = FALSE)
+st_write(edges, dsn = sprintf("%s/street_network_edges_%s.gpkg", output_dir, city_name), append = FALSE)
+st_write(nodes, dsn = sprintf("%s/street_network_nodes_%s.gpkg", output_dir, city_name), append = FALSE)
 ```
 
 ## 3. Corridor edge delineation
@@ -300,7 +309,8 @@ clean <- function(net){
 cleaned <- clean(trimmed)
 ```
 
-We calculate the weights (= distances) of the edges, will be used to determine the shortest paths between the two vertices
+### calculate short path
+We calculate the weights (= length) of the edges, will be used to determine the shortest paths between the two vertices
 
 ```{r}
 calc_weights <- function(net){
@@ -413,7 +423,85 @@ st_write(
         st_union(corridor_edge_1),
         st_union(corridor_edge_2)
     ),
-    dsn = sprintf("data/generated/corridor_%s.gpkg", river_name),
+    dsn = sprintf("%s/corridor_%s.gpkg", output_dir, river_name),
     append=FALSE,
 )
+```
+
+### Define some functions to calculate a different weight
+
+In this approach, the distance from the initial corridor edges is incorporated into the edge length as a "weight" before calculating the shortest path. This added cost encourages the path to stay as close as possible to the initial corridor. When comparing two edges of the same length, the edge closer to the initial corridor is preferred, as its nodes have smaller distances to the corridor. Conversely, when comparing edges with equal distances to the corridor, the one with the shorter length is selected. Therefore, the "weight" of an edge is determined by its length plus the sum of its distances from the corridor.
+
+```{r}
+# add edge_length to edges
+add_edge_length <- function(net){
+    net |>
+        activate("edges") |>
+        mutate(edge_length = edge_length())
+}
+
+add_edge_dist <- function(net, buffer){
+    edges <- getEdges(net)
+    distances <- st_distance(edges, buffer, which = "Euclidean")
+    net |>
+        activate("edges") |>
+        mutate(edge_distance = distances)
+}
+
+# calculate weights; here Length + Distance
+# note that there are different ways to caclulate weights, for example
+# one can give more importance to Distance by 0.2 * Length + 0.8 * Distance
+# or one can use only Distance.
+calc_weights_sum <- function(net, dist_weight){
+    net |>
+        activate("edges") |>
+        mutate(
+            edge_length = set_units(edge_length, "m"),
+            edge_distance = set_units(edge_distance, "m"),
+            weight = (1. - dist_weight) * edge_length + dist_weight * edge_distance
+            )
+}
+```
+
+```{r}
+# apply all function to the fisrt subset
+area <- areas[1]
+dist_weight <- 0.5
+
+network <- trim(net, area, corridor_initial) |>
+    clean() |>
+    add_edge_length() |>
+    add_edge_dist(corridor_initial) |>
+    calc_weights_sum(dist_weight) |>
+    activate("nodes") |>
+    filter(group_components() == 1)  # keep only the main connected component
+
+corridor_edge_1_sum <- get_corridor_edge(network, area, vertices)
+```
+
+```{r}
+# apply all function to the second subset
+area <- areas[2]
+dist_weight <- 0.5
+
+network <- trim(net, area, corridor_initial) |>
+    clean() |>
+    add_edge_length() |>
+    add_edge_dist(corridor_initial) |>
+    calc_weights_sum(dist_weight) |>
+    activate("nodes") |>
+    filter(group_components() == 1)  # keep only the main connected component
+
+corridor_edge_2_sum <- get_corridor_edge(network, area, vertices)
+```
+
+```{r}
+# comparison
+leaflet() |>
+    addTiles() |>
+    addPolygons(data = getGeomLatLon(corridor_initial), color = "blue") |>
+    addPolylines(data = corridor_edge_1_sum |> getGeomLatLon(), color = "red")|>
+    addPolylines(data = corridor_edge_2_sum |> getGeomLatLon(), color = "red")|>
+    addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue")|>
+    addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "blue")
 ```
