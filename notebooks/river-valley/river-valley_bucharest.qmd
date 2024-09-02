@@ -102,10 +102,11 @@ Use the `costDist` function from `terra` to compute the cost distance from the t
 cd <- costDist(slope_masked, target=0)
 ```
 
-Visualize the mask generated using a (random) threshold applied to the computed cost distance:
+Visualize the mask generated using by the given elevation gain threshold:
 
 ```{r}
-plot(cd<2)
+mask_valley <- (cd<THRES_ELEVETION_GAIN)
+plot(mask_valley)
 ```
 
 Load the valley edge used in the previous study and reproject it:
@@ -134,4 +135,24 @@ r <- geom_raster(
 )
 v <- geom_sf(data = valley_repr)
 ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
+```
+
+# Vectorize the river polygon mask
+
+```{r}
+# Crop to the middle to get rid of the edges
+extent_to_extract <- ext(c(419750, 436050, 4909820, 4932500))
+mask_valley_crop <- crop(mask_valley, extent_to_extract)
+plot(mask_valley_crop)
+```
+
+
+```{r}
+polygons <- as.polygons(mask_valley_crop, dissolve=TRUE)
+```
+
+```{r}
+polygons_sf <- st_as_sf(polygons)
+polygons_valley = polygons_sf[polygons_sf[["slope"]]==1, ]
+plot(polygons_valley)
 ```
