@@ -22,7 +22,7 @@ In this notebooks we explore how to delineate river corridor edges using Buchare
 
 ```{r}
 # define a directory to store some outputs
-output_dir = "."
+output_dir = "data/generated"
 ```
 
 ```{r}
@@ -44,6 +44,7 @@ bbox <- st_bbox(bbox, crs = st_crs(4326)) |>
     st_transform(epsg_code)
 bbox_expanded <- bbox |>
     st_buffer(bbox_buffer)
+bbox_expanded_latlon <- bbox_expanded |> st_transform(4326) |> st_bbox()
 ```
 
 A couple of utility functions:
@@ -94,8 +95,8 @@ OSM multilines include river lines grouped by the river name. We extract the rel
 waterway <- waterways$osm_multilines |>
     filter(name == river_name) |>
     st_transform(epsg_code) |>
-    st_geometry() |>
-    st_intersection(st_buffer(bbox, bbox_buffer + 1000))
+    st_geometry() #|>
+    # st_intersection(st_buffer(bbox, bbox_buffer + 1000))
 
 # st_write(waterway, sprintf("%s/waterway.gpkg", output_dir))
 ```
@@ -153,6 +154,7 @@ buffer_dist <- 500  # distance (in m) from the water stream
 
 ```{r}
 corridor_initial <- c(waterway, waterbody) |>
+    st_intersection(st_buffer(bbox, bbox_buffer + 1000)) |>
     st_buffer(buffer_dist) |>
     st_union()
 ```
@@ -309,7 +311,8 @@ clean <- function(net){
 cleaned <- clean(trimmed)
 ```
 
-### calculate short path
+### Calculate shortest path
+
 We calculate the weights (= length) of the edges, will be used to determine the shortest paths between the two vertices
 
 ```{r}
@@ -342,7 +345,7 @@ get_target_points <- function(vertices, area, threshold = 0.0001){
         st_geometry()
 }
 
-get_corridor_edge <- function(network, area, vertices){
+get_corridor_edge <- function(network, area, vertices, weight_name = "weight"){
     # determine start and endpoint
     target_points <- get_target_points(vertices, area)
 
@@ -352,7 +355,7 @@ get_corridor_edge <- function(network, area, vertices){
         network,
         from = target_points[1],
         to = target_points[2],
-        weights = "weight",
+        weights = weight_name,
         type = "shortest"
     )
 
@@ -428,7 +431,7 @@ st_write(
 )
 ```
 
-### Define some functions to calculate a different weight
+### Modified approach accounting for distance for initial corridor guess
 
 In this approach, the distance from the initial corridor edges is incorporated into the edge length as a "weight" before calculating the shortest path. This added cost encourages the path to stay as close as possible to the initial corridor. When comparing two edges of the same length, the edge closer to the initial corridor is preferred, as its nodes have smaller distances to the corridor. Conversely, when comparing edges with equal distances to the corridor, the one with the shorter length is selected. Therefore, the "weight" of an edge is determined by its length plus the sum of its distances from the corridor.
 
@@ -504,4 +507,74 @@ leaflet() |>
     addPolylines(data = corridor_edge_2_sum |> getGeomLatLon(), color = "red")|>
     addPolylines(data = corridor_edge_1 |> getGeomLatLon(), color = "blue")|>
     addPolylines(data = corridor_edge_2 |> getGeomLatLon(), color = "blue")
+```
+
+
+### Modified approach on full network
+
+The method used in the previous subsection delineates the two corridor edges using the two fragments of the street networks and the initial guess of the river corridor as target geometry. We now test an approach where we use instead the full street network to run the shortest path algorithm and the two edges of the initial river corridor as target geometries. We first determine these geometries by splitting the boundary of the initial river corridor in two using the river center line:
+
+```{r}
+edges_initial <- corridor_initial |>
+    st_split(waterway) |>
+    st_collection_extract() |>
+    st_boundary() |>
+    st_difference(waterway)
+```
+
+Now we take the full network and perform the preparation/cleaning steps carried out earlier. We also define the function that computes the distances from a given geometry (i.e. the weights for the shortest path algorithm):
+
+```{r}
+add_edge_dist <- function(net, geometry, weight_name, weight_distance = 0.6){
+    edges <- getEdges(net)
+    distances <- st_distance(st_centroid(edges), geometry, which = "Euclidean")
+    net |>
+        activate("edges") |>
+        mutate("{weight_name}" := (1. - weight_distance) * edge_length + weight_distance * distances)
+}
+
+network <- net |>
+    clean() |>
+    activate("nodes") |>
+    filter(group_components() == 1)
+
+network <- network |>
+    add_edge_length() |>
+    add_edge_dist(edges_initial[1], "weight_edge_1") |>
+    add_edge_dist(edges_initial[2], "weight_edge_2")
+
+```
+
+We now rerun the procedure employed to find the corridor edges for the two sides:
+
+```{r}
+# first edge
+edges_initial_1 <- edges_initial[1]
+area <- areas[st_intersects(edges_initial_1, areas) |> unlist() ]
+corridor_edge_1_weights <- get_corridor_edge(network, area, vertices,  weight_name = "weight_edge_1")
+
+# second edge
+edges_initial_2 <- edges_initial[2]
+area <- areas[st_intersects(edges_initial_2, areas) |> unlist() ]
+corridor_edge_2_weights <- get_corridor_edge(network, area, vertices, weight_name = "weight_edge_2")
+```
+
+Cap and compare to the corridor computed without accounting for the distance from the initial guess:
+
+```{r}
+corridor_edges_weights <- st_union(corridor_edge_1_weights, corridor_edge_2_weights)
+
+corridor_weights <- city_boundary |>
+    st_split(corridor_edges_weights) |>
+    st_collection_extract("POLYGON") |>
+    st_as_sf() |>
+    st_filter(waterway, .predicate = st_intersects)
+```
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = corridor_edges_weights |> getGeomLatLon())
+    # addPolygons(data = corridor |> getGeomLatLon(), color = "red") |>
+    # addPolygons(data = corridor_weights |> getGeomLatLon(), color = "red")
 ```
