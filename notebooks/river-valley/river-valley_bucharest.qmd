@@ -9,6 +9,13 @@ library("sf")
 library("terra")
 ```
 
+# Define a threshold for river valley
+
+In this notebook, the river valley is defined by a maximum elevation gain from the river line along a shortest path. 
+```{r}
+THRES_ELEVETION_GAIN = 10 # Elevation Gain threshold in meters
+```
+
 # River valley delineation for Bucharest waterways
 
 Load input files: raster DEM and multilinestrings representing the waterway:
@@ -19,25 +26,38 @@ river <- st_read("data/CRiSp-data-bucharest.gpkg", layer = "URC-D_dambovita_l_20
     st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
 ```
 
-Visualize DEM:
+
+Filter Dem with a low-pass filter. This is applied because of the resisual building elevations in DTM. 
+The median of the moving window is taken to replace the center pixel. 
+```{r}
+dem_filtered <- focal(dem, w=3, fun="median")
+```
+
+
 
 ```{r}
-dem_df <- as.data.frame(dem, xy=TRUE)  # convert raster to df for plotting
+dem_df_filtered <- as.data.frame(dem_filtered, xy=TRUE)  # convert raster to df for plotting
 
-xlim <- c(xmin(dem), xmax(dem))
-ylim <- c(ymin(dem), ymax(dem))
+xlim <- c(xmin(dem_filtered), xmax(dem_filtered))
+ylim <- c(ymin(dem_filtered), ymax(dem_filtered))
 
 r <- geom_raster(
-    data = dem_df,
+    data = dem_df_filtered,
     aes(
         x = x,
         y = y,
-        fill = Copernicus_DSM_COG_10_N44_00_E026_00_DEM
+        fill = focal_median
     )
 )
 v <- geom_sf(data = river)
 ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
 ```
+
+
+```{r}
+dem <- dem_filtered
+```
+
 
 Reproject both DEM and waterway to projected CRS (in m):
 
@@ -51,7 +71,7 @@ Compute slope and convert it to percentage:
 
 ```{r}
 slope_rad <- terrain(dem_repr, v = "slope", unit = "radians")
-slope <- tan(slope_rad) * 100  # convert to percentage
+slope <- tan(slope_rad)
 ```
 
 
@@ -69,7 +89,7 @@ slope_masked <- mask(
 )
 slope_masked <- mask(
     slope_masked,
-    rivers_repr,
+    river_repr,
     inverse = TRUE,
     updatevalue = 0,
     touches = TRUE
@@ -82,10 +102,11 @@ Use the `costDist` function from `terra` to compute the cost distance from the t
 cd <- costDist(slope_masked, target=0)
 ```
 
-Visualize the mask generated using a (random) threshold applied to the computed cost distance:
+Visualize the mask generated using by the given elevation gain threshold:
 
 ```{r}
-plot(cd <= 200)
+mask_valley <- (cd<THRES_ELEVETION_GAIN)
+plot(mask_valley)
 ```
 
 Load the valley edge used in the previous study and reproject it:
@@ -99,7 +120,7 @@ valley_repr <- st_transform(valley, crs = utm_crs)
 Compare current result with previous valley edge:
 
 ```{r}
-cd_thres_df <- as.data.frame(cd <= 1500, xy=TRUE)  # convert raster to df for plotting
+cd_thres_df <- as.data.frame(cd <= THRES_ELEVETION_GAIN, xy=TRUE)  # convert raster to df for plotting
 
 xlim <- c(xmin(cd), xmax(cd))
 ylim <- c(ymin(cd), ymax(cd))
@@ -114,4 +135,24 @@ r <- geom_raster(
 )
 v <- geom_sf(data = valley_repr)
 ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
+```
+
+# Vectorize the river polygon mask
+
+```{r}
+# Crop to the middle to get rid of the edges
+extent_to_extract <- ext(c(419750, 436050, 4909820, 4932500))
+mask_valley_crop <- crop(mask_valley, extent_to_extract)
+plot(mask_valley_crop)
+```
+
+
+```{r}
+polygons <- as.polygons(mask_valley_crop, dissolve=TRUE)
+```
+
+```{r}
+polygons_sf <- st_as_sf(polygons)
+polygons_valley = polygons_sf[polygons_sf[["slope"]]==1, ]
+plot(polygons_valley)
 ```
