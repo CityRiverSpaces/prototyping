@@ -7,13 +7,7 @@ format: html
 library("ggplot2")
 library("sf")
 library("terra")
-```
-
-# Define a threshold for river valley
-
-In this notebook, the river valley is defined by a maximum elevation gain from the river line along a shortest path. 
-```{r}
-THRES_ELEVETION_GAIN = 10 # Elevation Gain threshold in meters
+library("leaflet")
 ```
 
 # River valley delineation for Bucharest waterways
@@ -21,59 +15,34 @@ THRES_ELEVETION_GAIN = 10 # Elevation Gain threshold in meters
 Load input files: raster DEM and multilinestrings representing the waterway:
 
 ```{r}
-dem <- rast("data/DEM_Bucharest.tif")
-river <- st_read("data/CRiSp-data-bucharest.gpkg", layer = "URC-D_dambovita_l_2017") |>
-    st_zm(drop = TRUE, what = "ZM")  # drop Z dimension
+dem <- rast("data/DEM_Bucharest_expanded.tif")
+river_geoms <- st_read("data/generated/waterway_Dâmbovița.gpkg")
+river <- river_geoms[1,]  # select waterbody extent
 ```
 
-
-Filter Dem with a low-pass filter. This is applied because of the resisual building elevations in DTM. 
-The median of the moving window is taken to replace the center pixel. 
-```{r}
-dem_filtered <- focal(dem, w=3, fun="median")
-```
-
-
+Filter DEM with a low-pass filter. This is applied to smoothen the DEM and remove the effect of the residual building elevations in the DTM as much as possible. The median of the moving window is taken to replace the center pixel.
 
 ```{r}
-dem_df_filtered <- as.data.frame(dem_filtered, xy=TRUE)  # convert raster to df for plotting
-
-xlim <- c(xmin(dem_filtered), xmax(dem_filtered))
-ylim <- c(ymin(dem_filtered), ymax(dem_filtered))
-
-r <- geom_raster(
-    data = dem_df_filtered,
-    aes(
-        x = x,
-        y = y,
-        fill = focal_median
-    )
-)
-v <- geom_sf(data = river)
-ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
+dem_filtered <- focal(dem, w=7, fun="median")
 ```
-
-
 ```{r}
-dem <- dem_filtered
+plot(dem_filtered)
 ```
 
-
-Reproject both DEM and waterway to projected CRS (in m):
+Reproject both the DEM and the waterway to a projected CRS (in m):
 
 ```{r}
 utm_crs <- 'epsg:32635'
-dem_repr <- project(dem, utm_crs, method = "near")
+dem_repr <- project(dem_filtered, utm_crs, method = "near")
 river_repr <- st_transform(river, crs = utm_crs)
 ```
 
-Compute slope and convert it to percentage:
+Compute the slope and convert it to percentage:
 
 ```{r}
 slope_rad <- terrain(dem_repr, v = "slope", unit = "radians")
-slope <- tan(slope_rad)
+slope <- tan(slope_rad)  #  radians -> percentage
 ```
-
 
 ```{r}
 plot(slope)
@@ -99,60 +68,82 @@ slope_masked <- mask(
 Use the `costDist` function from `terra` to compute the cost distance from the target cells (cells with value equal to zero):
 
 ```{r}
-cd <- costDist(slope_masked, target=0)
-```
-
-Visualize the mask generated using by the given elevation gain threshold:
-
-```{r}
-mask_valley <- (cd<THRES_ELEVETION_GAIN)
-plot(mask_valley)
+cd <- costDist(slope_masked, target = 0)
+names(cd) <- "cost_distance"
+plot(cd)
 ```
 
 Load the valley edge used in the previous study and reproject it:
 
 ```{r}
-st_layers("data/CRiSp-data-bucharest.gpkg")
+# st_layers("data/CRiSp-data-bucharest.gpkg")  # display layen names
 valley <- st_read("data/CRiSp-data-bucharest.gpkg", layer = "URC-D_valleyedge_mod")
 valley_repr <- st_transform(valley, crs = utm_crs)
 ```
 
-Compare current result with previous valley edge:
+We use the method from [this paper](https://doi.org/10.5194/hess-2020-361) in order to set the threshold on the accumulated cost distance raster to define the valley. We first define a buffer region around the river (in the article they used the wetlands geometries) and use this geometry to crop the raster:
 
 ```{r}
-cd_thres_df <- as.data.frame(cd <= THRES_ELEVETION_GAIN, xy=TRUE)  # convert raster to df for plotting
-
-xlim <- c(xmin(cd), xmax(cd))
-ylim <- c(ymin(cd), ymax(cd))
-
-r <- geom_raster(
-    data = cd_thres_df,
-    aes(
-        x = x,
-        y = y,
-        fill = slope
-    )
+BUFFER_REGION <- 2000  # m
+river_buffer <- st_buffer(river_repr, BUFFER_REGION)
+cd_masked <- mask(
+    cd,
+    river_buffer,
+    updatevalue = NA,
+    touches = TRUE
 )
-v <- geom_sf(data = valley_repr)
-ggplot() + r + v + coord_sf(xlim = xlim, ylim= ylim, expand = FALSE)
 ```
 
-# Vectorize the river polygon mask
+We then calculate the mean over the cropped region:
 
 ```{r}
-# Crop to the middle to get rid of the edges
-extent_to_extract <- ext(c(419750, 436050, 4909820, 4932500))
-mask_valley_crop <- crop(mask_valley, extent_to_extract)
-plot(mask_valley_crop)
+cd_mean <- mean(values(cd_masked), na.rm=TRUE)
+cd_mean
 ```
 
+We visualize the mean together with the distribution of accumulated distances:
 
 ```{r}
-polygons <- as.polygons(mask_valley_crop, dissolve=TRUE)
+cd_masked_df <- as.data.frame(cd_masked, xy=TRUE)  # convert raster to df
+
+ggplot() +
+    geom_histogram(data = cd_masked_df, aes(cost_distance), bins = 60) +
+    geom_vline(aes(xintercept = cd_mean), col = "red") +
+    coord_fixed(0.001)
+
+# ggsave("data/generated/tmp.png", width = 5, height = 2)
+```
+
+The mean value is used as a threshold to define the extend of the river valley:
+
+```{r}
+mask_valley <- (cd < cd_mean)
+plot(mask_valley)
+```
+
+We vectorize the mask to obtain the valley polygon:
+
+```{r}
+# # Crop to the middle to get rid of the edges
+# extent_to_extract <- ext(c(419750, 436050, 4909820, 4932500))
+# mask_valley <- crop(mask_valley, extent_to_extract)
+# plot(mask_valley)
 ```
 
 ```{r}
-polygons_sf <- st_as_sf(polygons)
-polygons_valley = polygons_sf[polygons_sf[["slope"]]==1, ]
-plot(polygons_valley)
+valley_polygon <- as.polygons(mask_valley, dissolve=TRUE) |>
+    st_as_sf()
+```
+
+Visualize:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    # addRasterImage(mask_valley, opacity = 0.6) |>
+    addPolygons(data = river_buffer |> st_geometry() |> st_transform(4326), color = "blue") |>
+    addPolygons(data = valley_polygon[2,] |> st_transform(4326), color = "green") |>
+    addPolylines(data = valley |> st_geometry() |> st_transform(4326), weight = 2) |>
+    addPolylines(data = river_repr |> st_geometry() |> st_transform(4326), color= "black")
+
 ```
