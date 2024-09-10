@@ -17,6 +17,13 @@ We use OSM data to define our area of interest (AoI):
 bb <- getbb("Bucharest")
 ```
 
+We expand the box by 0.05 deg (0.05  x 111 = approx. 5 km) on all sides:
+
+```{r}
+bb[,"max"] <- bb[,"max"] + 0.05
+bb[,"min"] <- bb[,"min"] - 0.05
+```
+
 The Earth Search STAC catalog lists few open datasets on AWS, including the Copernicus DEM GLO-30 (global, 30m resolution). We query the calalog for the DEM tiles intersecting our AoI:
 
 ```{r}
@@ -55,7 +62,7 @@ Finally, we store the output in a (cloud-optimized) GeoTiff (COG) file:
 ```{r}
 writeRaster(
     x = dem,
-    filename = "data/DEM_Bucharest.tif",
+    filename = "data/DEM_Bucharest_expanded.tif",
     filetype = "COG",
     overwrite = TRUE
 )
