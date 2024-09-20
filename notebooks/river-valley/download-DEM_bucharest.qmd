@@ -4,6 +4,7 @@ format: html
 ---
 
 ```{r}
+library("here")
 library("osmdata")
 library("rstac")
 library("terra")
@@ -60,9 +61,10 @@ plot(dem)
 Finally, we store the output in a (cloud-optimized) GeoTiff (COG) file:
 
 ```{r}
+data_dir  <- here("data/generated")
 writeRaster(
     x = dem,
-    filename = "data/DEM_Bucharest_expanded.tif",
+    filename = sprintf("%s/DEM_Bucharest_expanded.tif", data_dir),
     filetype = "COG",
     overwrite = TRUE
 )
