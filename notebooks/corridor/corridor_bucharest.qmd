@@ -8,6 +8,7 @@ format: html
 #| message: false
 
 library("dplyr")
+library("here")
 library("leaflet")
 library("lwgeom")
 library("osmdata")
@@ -22,7 +23,7 @@ In this notebooks we explore how to delineate river corridor edges using Buchare
 
 ```{r}
 # define a directory to store some outputs
-output_dir = "data/generated"
+output_dir = here("data/generated")
 ```
 
 ```{r}
