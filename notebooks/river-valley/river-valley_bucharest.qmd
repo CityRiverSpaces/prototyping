@@ -5,6 +5,8 @@ format: html
 
 ```{r}
 library("ggplot2")
+library("here")
+library("dplyr")
 library("sf")
 library("terra")
 library("leaflet")
@@ -15,37 +17,32 @@ library("leaflet")
 Load input files: raster DEM and multilinestrings representing the waterway:
 
 ```{r}
-dem <- rast("data/DEM_Bucharest_expanded.tif")
-river_geoms <- st_read("data/generated/waterway_Dâmbovița.gpkg")
+data_dir <- here("data/generated")
+dem <- sprintf("%s/DEM_Bucharest_expanded.tif", data_dir) |> rast()
+river_geoms <- sprintf("%s/waterway_Dâmbovița.gpkg", data_dir) |> st_read()
 river <- river_geoms[1,]  # select waterbody extent
-```
-
-Filter DEM with a low-pass filter. This is applied to smoothen the DEM and remove the effect of the residual building elevations in the DTM as much as possible. The median of the moving window is taken to replace the center pixel.
-
-```{r}
-dem_filtered <- focal(dem, w=7, fun="median")
-```
-```{r}
-plot(dem_filtered)
 ```
 
 Reproject both the DEM and the waterway to a projected CRS (in m):
 
 ```{r}
 utm_crs <- 'epsg:32635'
-dem_repr <- project(dem_filtered, utm_crs, method = "near")
+dem_repr <- project(dem, utm_crs, method = "near")
 river_repr <- st_transform(river, crs = utm_crs)
+```
+
+We apply a median filter to the DEM. This is to remove effects from buildings/constructions that are present in the DEM. Applying the filter to the cost distance surface rather than to the DEM seems to work better upstream (steep ridges are "smoothened out"), but it actually worsen the situation downstreams, where the effect of buildings is more pronounced.
+
+```{r}
+dem_filtered <- focal(dem_repr, w=5, fun="median")
+names(dem_filtered) <- "dem_filtered"
 ```
 
 Compute the slope and convert it to percentage:
 
 ```{r}
-slope_rad <- terrain(dem_repr, v = "slope", unit = "radians")
+slope_rad <- terrain(dem_filtered, v = "slope", unit = "radians")
 slope <- tan(slope_rad)  #  radians -> percentage
-```
-
-```{r}
-plot(slope)
 ```
 
 Set the slope to zero for the pixels overlapping the waterway. These values will be used as "targets" in the calculation of the cost distance:
@@ -70,10 +67,18 @@ Use the `costDist` function from `terra` to compute the cost distance from the t
 ```{r}
 cd <- costDist(slope_masked, target = 0)
 names(cd) <- "cost_distance"
-plot(cd)
 ```
 
-Load the valley edge used in the previous study and reproject it:
+Visualize the cost distance surface:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addRasterImage(cd, opacity = 0.9) |>
+    addPolylines(data = river |> st_transform(4326))
+```
+
+Load the valley edge used in the previous study and reproject it, this will be used for comparison purposes later on:
 
 ```{r}
 # st_layers("data/CRiSp-data-bucharest.gpkg")  # display layen names
@@ -110,15 +115,12 @@ ggplot() +
     geom_histogram(data = cd_masked_df, aes(cost_distance), bins = 60) +
     geom_vline(aes(xintercept = cd_mean), col = "red") +
     coord_fixed(0.001)
-
-# ggsave("data/generated/tmp.png", width = 5, height = 2)
 ```
 
 The mean value is used as a threshold to define the extend of the river valley:
 
 ```{r}
 mask_valley <- (cd < cd_mean)
-plot(mask_valley)
 ```
 
 We vectorize the mask to obtain the valley polygon:
@@ -132,7 +134,20 @@ We vectorize the mask to obtain the valley polygon:
 
 ```{r}
 valley_polygon <- as.polygons(mask_valley, dissolve=TRUE) |>
-    st_as_sf()
+    st_as_sf() |>
+    filter(cost_distance == 1) |>
+    st_geometry()
+```
+
+Remove holes:
+
+```{r}
+# valley_polygon_noholes <- valley_polygon
+valley_polygon_noholes <- valley_polygon |>
+    st_cast("POLYGON") |>
+    lapply(function(x) x[1]) |>
+    st_multipolygon() |>
+    st_sfc(crs = st_crs(valley_polygon))
 ```
 
 Visualize:
@@ -140,10 +155,18 @@ Visualize:
 ```{r}
 leaflet() |>
     addTiles() |>
-    # addRasterImage(mask_valley, opacity = 0.6) |>
     addPolygons(data = river_buffer |> st_geometry() |> st_transform(4326), color = "blue") |>
-    addPolygons(data = valley_polygon[2,] |> st_transform(4326), color = "green") |>
+    addPolygons(data = valley_polygon_noholes |> st_transform(4326), color = "green") |>
     addPolylines(data = valley |> st_geometry() |> st_transform(4326), weight = 2) |>
     addPolylines(data = river_repr |> st_geometry() |> st_transform(4326), color= "black")
+```
 
+Save output:
+
+```{r}
+st_write(
+    valley_polygon_noholes,
+    dsn = sprintf("%s/valley_Dâmbovița.gpkg", data_dir),
+    append = FALSE,
+)
 ```
