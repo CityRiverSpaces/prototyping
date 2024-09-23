@@ -4,6 +4,7 @@ format: html
 ---
 
 ```{r}
+library("here")
 library("osmdata")
 library("rstac")
 library("terra")
@@ -15,6 +16,13 @@ We use OSM data to define our area of interest (AoI):
 
 ```{r}
 bb <- getbb("Bucharest")
+```
+
+We expand the box by 0.05 deg (0.05  x 111 = approx. 5 km) on all sides:
+
+```{r}
+bb[,"max"] <- bb[,"max"] + 0.05
+bb[,"min"] <- bb[,"min"] - 0.05
 ```
 
 The Earth Search STAC catalog lists few open datasets on AWS, including the Copernicus DEM GLO-30 (global, 30m resolution). We query the calalog for the DEM tiles intersecting our AoI:
@@ -53,9 +61,10 @@ plot(dem)
 Finally, we store the output in a (cloud-optimized) GeoTiff (COG) file:
 
 ```{r}
+data_dir  <- here("data/generated")
 writeRaster(
     x = dem,
-    filename = "data/DEM_Bucharest.tif",
+    filename = sprintf("%s/DEM_Bucharest_expanded.tif", data_dir),
     filetype = "COG",
     overwrite = TRUE
 )
