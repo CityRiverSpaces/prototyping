@@ -1,0 +1,197 @@
+---
+title: "Download OSM data"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library("dplyr")
+library("here")
+library("leaflet")
+library("osmdata")
+library("sf")
+```
+
+In this notebooks we download the relevant OSM data for Bucharest. We focus on one of the rivers and use a specific projected CRS for the analysis. Also, we make sure that we include a given area around the city boundaries.
+
+```{r}
+city_name <- "Bucharest"
+river_name <- "Dâmbovița"
+epsg_code <- 32635  # UTM zone 35N
+bbox_buffer <- 2000  # in m, expand bbox for street network
+
+# define the directory where to store the output
+output_dir = here("data/generated")
+```
+
+We define a couple of utility functions:
+
+```{r}
+# query the Overpass API for a key:value pair within a given bounding box
+osmdata_as_sf <- function(key, value, bbox){
+    bbox |>
+        opq() |>
+        add_osm_feature(key = key, value = value) |>
+        osmdata_sf()
+}
+
+# get geometry in lat/lon (WGS84)
+get_geom_latlon <- function(x) st_transform(x, 4326) |> st_geometry()
+```
+
+We start by getting the bounding box for the study area, and expand it using the provided buffer:
+
+```{r}
+# bounding box
+bbox <- getbb(city_name) |> as.vector()
+names(bbox) <- c("xmin", "ymin", "xmax", "ymax")
+bbox <- st_bbox(bbox, crs = 4326)
+```
+
+```{r}
+# bbox expanded
+bbox_expanded <- bbox |>
+    st_as_sfc() |>
+    st_transform(crs = epsg_code) |>  # transform to projected CRS
+    st_buffer(bbox_buffer) |>
+    st_transform(crs = 4326) |>  # transform back to lat/lon
+    st_bbox()
+```
+
+## 1. City boundary ----
+
+```{r}
+# get city boundary
+city_boundary <- osmdata_as_sf("place", "city", bbox)
+
+city_boundary <- city_boundary$osm_multipolygons |>
+    st_transform(epsg_code) |>
+    st_geometry()
+```
+
+```{r}
+# save the city boundary
+st_write(
+    city_boundary,
+    dsn = sprintf("%s/city_boundary_%s.gpkg", output_dir, city_name),
+    append = FALSE,
+    quiet = TRUE,
+)
+```
+
+## 2. Waterways ---
+
+Querying the Overpass API for `waterway:river`. OSM multilines include river lines grouped by the river name. We extract the relevant waterway and transform to the projected CRS:
+
+```{r}
+# waterways (linestrings)
+waterways <- osmdata_as_sf("waterway", "river", bbox)
+
+waterway <- waterways$osm_multilines |>
+    filter(name == river_name) |>
+    st_transform(epsg_code) |>
+    st_geometry()
+```
+
+We also query the Overpass API for `natural:water`. The results also include features such as fountains. The geometries are not contiguous and some part of the water bodies are actually represented as lines instead of polygons. We determine and keep the only features that intersect the relevant waterway:
+
+```{r}
+# water area (polygons)
+water <- osmdata_as_sf("natural", "water", bbox)
+
+waterbody <- bind_rows(water$osm_polygons, water$osm_multipolygons) |>
+    st_transform(epsg_code) |>
+    st_filter(waterway, .predicate = st_intersects) |>
+    st_union() |>
+    st_geometry()
+```
+
+```{r}
+# save the waterway and water body geometries
+st_write(
+    c(waterway, waterbody),
+    dsn = sprintf("%s/waterway_%s.gpkg", output_dir, river_name),
+    append = FALSE,
+    quiet = TRUE,
+)
+```
+
+## 3. Street network ----
+
+Querying the Overpass API for the `highway` key, using the expanded bounding box to include relevant streets close to the edge of the city:
+
+```{r}
+highways_value <- c("motorway", "trunk", "primary", "secondary", "tertiary")
+links_value <- sapply(
+    X = highways_value,
+    FUN = function(x) sprintf("%s_link", x),
+    USE.NAMES = FALSE
+)
+highways <- osmdata_as_sf(
+    "highway",
+    c(highways_value, links_value),
+    bbox_expanded
+)
+```
+
+Data cleaning steps (see e.g. [this tutorial](https://geospatial-community.netlify.app/post/2022-03-31-spatial-networks/)):
+
+```{r}
+# cast polygons (closed streets) into lines
+poly_to_lines <- highways$osm_polygons |>
+    st_cast("LINESTRING")
+
+# combine all features in one data frame
+highways_lines <- highways$osm_lines |>
+    bind_rows(poly_to_lines) |>
+    select("highway") |>  # only keep "highway" column
+    rename(type = `highway`) |>  # rename it to "type"
+    st_transform(epsg_code)
+```
+
+```{r}
+# save the street geometries
+st_write(
+    highways_lines,
+    dsn = sprintf("%s/highways_%s.gpkg", output_dir, city_name),
+    append = FALSE,
+    quiet = TRUE,
+)
+```
+
+## 4. Rail network ----
+
+Querying the Overpass API for the `railway:rail` key:tag, also using the expanded bounding box to include relevant ways close to the edge of the city:
+
+```{r}
+railways <- osmdata_as_sf("railway", "rail", bbox_expanded)
+railways_lines <- railways$osm_lines |>
+    select("railway") |>  # only keep "railway" column
+    rename(type = `railway`) |>  # rename it to "type"
+    st_transform(epsg_code)
+```
+
+```{r}
+# save the railways geometries
+st_write(
+    railways_lines,
+    dsn = sprintf("%s/railways_%s.gpkg", output_dir, city_name),
+    append = FALSE,
+    quiet = TRUE,
+)
+```
+
+## 5. Visualize OSM data ----
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = city_boundary |> get_geom_latlon(), color = "yellow", group = "city") |>
+    addPolylines(data = waterway |> get_geom_latlon(), color = "blue", group = "water") |>
+    addPolygons(data = waterbody |> get_geom_latlon(), color = "cyan", group = "water") |>
+    addPolylines(data = highways_lines |> get_geom_latlon(), color = "black", group = "highways") |>
+    addPolylines(data = railways_lines |> get_geom_latlon(), color = "red", group = "railways") |>
+    addLayersControl(overlayGroups = c("city", "water", "highways", "railways"))
+```
