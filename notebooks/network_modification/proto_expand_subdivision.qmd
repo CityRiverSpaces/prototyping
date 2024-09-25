@@ -1,0 +1,869 @@
+---
+title: "proto_expand_subdivision"
+format: html
+---
+
+```{r}
+library("sfnetworks")
+library("sf")
+library("tidygraph")
+library("igraph")
+library("dplyr")
+library("leaflet")
+library("lwgeom")
+library("osmdata")
+library("purrr")
+library("sfheaders")
+library("rlist")
+library("tidyverse")
+library("tibble")
+
+#library()
+```
+
+```{r}
+p1 = st_point(c(0, 2))
+p2 = st_point(c(2, 2))
+p3 = st_point(c(4, 2))
+#p4 = st_point(c(3, 1))
+p5 = st_point(c(8, 2))
+p6 = st_point(c(6, 4))
+p7 = st_point(c(6, 0))
+p8 = st_point(c(8, 6))
+p9 = st_point(c(8, 4))
+p10 = st_point(c(8, 0))
+p11 = st_point(c(10, 4))
+p12 = st_point(c(10, 0))
+p13 = st_point(c(10, -2))
+p14 = st_point(c(11.6, 2))
+p15 = st_point(c(12, 2.4))
+p16 = st_point(c(12.4, 2))
+p17 = st_point(c(12, 1.6))
+p18 = st_point(c(12, 4))
+p19 = st_point(c(12, -2))
+p20 = st_point(c(14, 2))
+p21 = st_point(c(2,4))
+p22 = st_point(c(2,0))
+p23 = st_point(c(5,3))
+p24 = st_point(c(7,1))
+p25 = st_point(c(4,4))
+p26 = st_point(c(4,0))
+```
+
+```{r}
+l1 = st_sfc(st_linestring(c(p1, p2, p3)))
+#l2 = st_sfc(st_linestring(c(p3, p4, p5)))
+#l3 = st_sfc(st_linestring(c(p6, p4, p7)))
+l2 = st_sfc(st_linestring(c(p3, p5)))
+l3 = st_sfc(st_linestring(c(p6, p7)))
+l4 = st_sfc(st_linestring(c(p8, p11, p9)))
+l5 = st_sfc(st_linestring(c(p9, p5, p10)))
+l6 = st_sfc(st_linestring(c(p8, p9)))
+l7 = st_sfc(st_linestring(c(p10, p12, p13, p10)))
+l8 = st_sfc(st_linestring(c(p5, p14)))
+l9 = st_sfc(st_linestring(c(p15, p14)))
+l10 = st_sfc(st_linestring(c(p16, p15)))
+l11 = st_sfc(st_linestring(c(p14, p17)))
+l12 = st_sfc(st_linestring(c(p17, p16)))
+l13 = st_sfc(st_linestring(c(p15, p18)))
+l14 = st_sfc(st_linestring(c(p17, p19)))
+l15 = st_sfc(st_linestring(c(p16, p20)))
+l16 = st_sfc(st_linestring(c(p21,p2, p22)))
+l17 = st_sfc(st_linestring(c(p23, p24)))
+l18 = st_sfc(st_linestring(c(p25, p26)))
+
+```
+
+```{r}
+lines = c(l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18)
+```
+
+
+```{r}
+print(lines,n=20)
+```
+
+```{r}
+edge_colors = function(x) rep(sf.colors(12, categorical = TRUE)[-2], 2)[c(1:ecount(x))]
+net = as_sfnetwork(lines)
+
+```
+
+```{r}
+plot(st_geometry(net, "edges"), col = edge_colors(net), lwd = 4)
+plot(st_geometry(net, "nodes"), pch = 20, cex = 2, add = TRUE)
+```
+
+
+```{r}
+x=net
+all_intersections_as_nodes=TRUE
+
+```
+
+```{r}
+require_explicit_edges(x)
+if (will_assume_constant(x)) raise_assume_constant("to_spatial_subdivision")
+# Retrieve nodes and edges from the network.
+nodes = nodes_as_sf(x)
+edges = edges_as_sf(x)
+# For later use:
+# --> Check wheter x is directed.
+directed = is_directed(x)
+## ===========================
+# STEP 0 (optional): DETERMINE INTERSECTIONS 
+# Determine all possible point like intersections of network edges
+if (all_intersections_as_nodes == TRUE){
+intersect_pts = retrieve_intersections(edges)
+} 
+## ===========================
+# STEP I: DECOMPOSE THE EDGES
+# Decompose the edges linestring geometries into the points that shape them.
+## ===========================
+# Extract all points from the linestring geometries of the edges.
+edge_pts = sf_to_df(edges)
+# Extract two subsets of information:
+# --> One with only the coordinates of the points
+# --> Another with indices describing to which edge a point belonged.
+edge_coords = edge_pts[names(edge_pts) %in% c("x", "y", "z", "m")]
+edge_idxs = edge_pts$linestring_id
+## =======================================
+# Find which of the edge points is a boundary point.
+is_startpoint = !duplicated(edge_idxs)
+is_endpoint = !duplicated(edge_idxs, fromLast = TRUE)
+is_boundary = is_startpoint | is_endpoint
+## ==========================================
+# STEP Ib (optional): INSERT INTERSECTIONS 
+# Insert all intersection points determined in STEP 0 into 
+# their respective linestrings. They can subsequently be used
+# defining where to subdivide the edges.
+```
+
+```{r}
+edge_pts
+```
+
+```{r}
+if (all_intersections_as_nodes == TRUE){
+  edge_pts$is_startpoint <- is_startpoint
+  edge_pts$is_endpoint <- is_endpoint
+  n_intersect_vertices=length(intersect_pts$geometry)
+  for (i in 1:n_intersect_vertices){
+    pt_i = intersect_pts[i,]$geometry
+    intersecting_elements = unique(unlist(intersect_pts[i,]$origins))
+    for (j in 1:length(intersecting_elements)){
+      element_id = intersecting_elements[[j]]
+      edge_pts <- insert_intersection(edge_pts, pt_i, element_id)
+    }                                                                                    
+  }
+# Drop start/endpoint columns and update 
+  edge_pts <- subset(edge_pts, select = -c(is_startpoint, is_endpoint))
+  edge_coords = edge_pts[names(edge_pts) %in% c("x", "y", "z", "m")]
+  edge_idxs = edge_pts$linestring_id
+  is_startpoint = !duplicated(edge_idxs)
+  is_endpoint = !duplicated(edge_idxs, fromLast = TRUE)
+  is_boundary = is_startpoint | is_endpoint
+}
+```
+
+```{r}
+
+```
+
+```{r}
+
+## =======================================
+# STEP II: DEFINE WHERE TO SUBDIVIDE EDGES
+# Edges should be split at locations where:
+# --> An edge interior point is equal to a boundary point in another edge.
+# --> An edge interior point is equal to an interior point in another edge.
+# Hence, we need to split edges at point that:
+# --> Are interior points.
+# --> Have at least one duplicate among the other edge points.
+# Find which of the edge points occur more than once.
+is_duplicate_desc = duplicated(edge_coords)
+is_duplicate_asc = duplicated(edge_coords, fromLast = TRUE)
+has_duplicate = is_duplicate_desc | is_duplicate_asc
+# Split points are those edge points satisfying both of the following rules:
+# --> 1) They have at least one duplicate among the other edge points.
+# --> 2) They are not edge boundary points themselves.
+is_split = has_duplicate & !is_boundary
+if (! any(is_split)) return (x)
+## ================================
+# STEP III: DUPLICATE SPLIT POINTS
+# The split points are currently a single interior point in an edge.
+# They will become the endpoint of one edge *and* the startpoint of another.
+# Hence, each split point needs to be duplicated.
+## ================================
+# Create the repetition vector:
+# --> This defines for each edge point if it should be duplicated.
+# --> A value of '1' means 'store once', i.e. don't duplicate.
+# --> A value of '2' means 'store twice', i.e. duplicate.
+# --> Split points will be part of two new edges and should be duplicated.
+reps = rep(1L, nrow(edge_coords))
+reps[is_split] = 2L
+# Create the new coordinate data frame by duplicating split points.
+new_edge_coords = data.frame(lapply(edge_coords, function(i) rep(i, reps)))
+## ==========================================
+# STEP IV: CONSTRUCT THE NEW EDGES GEOMETRIES
+# With the new coords of the edge points we need to recreate linestrings.
+# First we need to know which edge points belong to which *new* edge.
+# Then we need to build a linestring geometry for each new edge.
+## ==========================================
+# First assign each new edge point coordinate its *original* edge index.
+# --> Then increment those accordingly at each split point.
+orig_edge_idxs = rep(edge_idxs, reps)
+# Original edges are subdivided at each split point.
+# Therefore, a new edge originates from each split point.
+# Hence, to get the new edge indices:
+# --> Increment each original edge index by 1 at each split point.
+incs = integer(nrow(new_edge_coords)) # By default don't increment.
+incs[which(is_split) + 1:sum(is_split)] = 1L # Add 1 after each split.
+new_edge_idxs = orig_edge_idxs + cumsum(incs)
+new_edge_coords$edge_id = new_edge_idxs
+# Build the new edge geometries.
+new_edge_geoms = sfc_linestring(new_edge_coords, linestring_id = "edge_id")
+st_crs(new_edge_geoms) = st_crs(edges)
+st_precision(new_edge_geoms) = st_precision(edges)
+new_edge_coords$edge_id = NULL
+## ===================================
+  # STEP V: CONSTRUCT THE NEW EDGE DATA
+  # We now have the geometries of the new edges.
+  # However, the original edge attributes got lost.
+  # We will restore them by:
+  # --> Adding back the attributes to edges that were not split.
+  # --> Duplicating original attributes within splitted edges.
+  # Beware that from and to columns will remain unchanged at this stage.
+  # We will update them later.
+  ## ===================================
+  # Find which *original* edge belongs to which *new* edge:
+  # --> Use the lists of edge indices mapped to the new edge points.
+  # --> There we already mapped each new edge point to its original edge.
+  # --> First define which new edge points are startpoints of new edges.
+  # --> Then retrieve the original edge index from these new startpoints.
+  # --> This gives us a single original edge index for each new edge.
+  is_new_startpoint = !duplicated(new_edge_idxs)
+  orig_edge_idxs = orig_edge_idxs[is_new_startpoint]
+  # Duplicate original edge data whenever needed.
+  new_edges = edges[orig_edge_idxs, ]
+  # Set the new edge geometries as geometries of these new edges.
+  st_geometry(new_edges) = new_edge_geoms
+  ## ==========================================
+  # STEP VI: CONSTRUCT THE NEW NODE GEOMETRIES
+  # All split points are now boundary points of new edges.
+  # All edge boundaries become nodes in the network.
+  ## ==========================================
+  is_new_boundary = rep(is_split | is_boundary, reps)
+  new_node_geoms = sfc_point(new_edge_coords[is_new_boundary, ])
+  st_crs(new_node_geoms) = st_crs(nodes)
+  st_precision(new_node_geoms) = st_precision(nodes)
+  ## =====================================
+  # STEP VII: CONSTRUCT THE NEW NODE DATA
+  # We now have the geometries of the new nodes.
+  # However, the original node attributes got lost.
+  # We will restore them by:
+  # --> Adding back the attributes to nodes that were already a node before.
+  # --> Filling attribute values of newly added nodes with NA.
+  # Beware at this stage the nodes are recreated from scratch.
+  # That means each boundary point of the new edges is stored as separate node.
+  # Boundaries with equal geometries will be merged into a single node later.
+  ## =====================================
+  # Find which of the *original* edge points equaled which *original* node.
+  # If an edge point did not equal a node, store NA instead.
+  node_idxs = rep(NA, nrow(edge_pts))
+  if (directed) {
+    node_idxs[is_boundary] = edge_boundary_node_indices(x)
+  } else {
+    node_idxs[is_boundary] = edge_boundary_point_indices(x)
+  }
+  # Find which of the *original* nodes belong to which *new* edge boundary.
+  # If a new edge boundary does not equal an original node, store NA instead.
+  orig_node_idxs = rep(node_idxs, reps)[is_new_boundary]
+  # Retrieve original node data for each new edge boundary.
+  # Rows of newly added nodes will be NA.
+  new_nodes = nodes[orig_node_idxs, ]
+  # Set the new node geometries as geometries of these new nodes.
+  st_geometry(new_nodes) = new_node_geoms
+  ## ==================================================
+  # STEP VIII: UPDATE FROM AND TO INDICES OF NEW EDGES
+  # Now we updated the node data, the node indices changes.
+  # Therefore we need to update the from and to columns of the edges as well.
+  ## ==================================================
+  # Define the indices of the new nodes.
+  # Equal geometries should get the same index.
+  new_node_idxs = st_match(new_node_geoms)
+  # Map node indices to edges.
+  is_source = rep(c(TRUE, FALSE), length(new_node_geoms) / 2)
+  new_edges$from = new_node_idxs[is_source]
+  new_edges$to = new_node_idxs[!is_source]
+  ## =============================
+  # STEP IX: UPDATE THE NEW NODES
+  # We can now remove the duplicated node geometries from the new nodes data.
+  # Then, each location is represented by a single node.
+  ## =============================
+  new_nodes = new_nodes[!duplicated(new_node_idxs), ]
+  ## ============================
+  # STEP X: RECREATE THE NETWORK
+  # Use the new nodes data and the new edges data to create the new network.
+  ## ============================
+  # Create new network.
+  x_new = sfnetwork_(new_nodes, new_edges, directed = directed)
+  # Return in a list.
+  list(
+    subdivision = x_new %preserve_network_attrs% x
+  )
+```
+
+```{r}
+plot(st_geometry(x_new, "edges"), col = edge_colors(net), lwd = 4)
+plot(st_geometry(x_new, "nodes"), pch = 20, cex = 2, add = TRUE)
+```
+
+```{r}
+x_new
+st_as_sf(x_new, "nodes")
+edge_pts
+```
+
+
+
+
+```{r}
+is.sf = function(x) {
+  inherits(x, "sf")
+}
+
+is.sfc = function(x) {
+  inherits(x, "sfc")
+}
+
+is.sfg = function(x) {
+  inherits(x, "sfg")
+}
+
+#' Check if constant edge attributes will be assumed for a network
+#'
+#' @param x An object of class \code{\link{sfnetwork}}.
+#'
+#' @return \code{TRUE} when the attribute-geometry relationship of at least
+#' one edge attribute of x is not constant, but sf will for some operations
+#' assume that it is, \code{FALSE} otherwise.
+#'
+#' @noRd
+will_assume_constant = function(x) {
+  ignore = c(
+    "from",
+    "to",
+    ".tidygraph_edge_index",
+    ".tidygraph_index",
+    ".sfnetwork_edge_index",
+    ".sfnetwork_index"
+  )
+  agr = edge_agr(x)
+  real_agr = agr[!names(agr) %in% ignore]
+  any(is.na(real_agr)) || any(real_agr != "constant")
+}
+
+
+#' @name attr_names
+#' @noRd
+#' @importFrom igraph edge_attr_names
+edge_attribute_names = function(x) {
+  edge_attr_names(x)
+}
+
+
+#' @name attr_names
+#' @noRd
+edge_feature_attribute_names = function(x) {
+  g_attrs = edge_attribute_names(x)
+  geom_colname = edge_geom_colname(x)
+  if (is.null(geom_colname)) {
+    character(0)
+  } else {
+    c("from", "to", g_attrs[g_attrs != geom_colname])
+  }
+}
+
+
+node_attribute_names = function(x) {
+  vertex_attr_names(x)
+}
+
+#' @name attr_names
+#' @noRd
+node_feature_attribute_names = function(x) {
+  g_attrs = node_attribute_names(x)
+  g_attrs[g_attrs != node_geom_colname(x)]
+}
+
+
+#' @name agr
+#' @importFrom igraph vertex_attr
+#' @noRd
+node_agr = function(x) {
+  agr = attr(vertex_attr(x), "agr")
+  make_agr_valid(agr, names = node_feature_attribute_names(x))
+}
+
+#' @name agr
+#' @importFrom igraph edge_attr
+#' @noRd
+edge_agr = function(x) {
+  agr = attr(edge_attr(x), "agr")
+  if (has_explicit_edges(x)) {
+    agr = make_agr_valid(agr, names = edge_feature_attribute_names(x))
+  }
+  agr
+}
+
+empty_agr = function(names) {
+  structure(rep(sf::NA_agr_, length(names)), names = names)
+}
+
+make_agr_valid = function(agr, names) {
+  levels = c("constant", "aggregate", "identity")
+  if (is.null(agr)) {
+    valid_agr = empty_agr(names)
+  } else {
+    valid_agr = structure(agr[names], names = names, levels = levels)
+  }
+  valid_agr
+}
+
+#' Check if a sfnetwork has spatially explicit edges
+#'
+#' @param x An object of class \code{\link{sfnetwork}}.
+#'
+#' @return \code{TRUE} if the network has spatially explicit edges,
+#' \code{FALSE} otherwise.
+#'
+#' @importFrom igraph edge_attr
+#' @noRd
+has_explicit_edges = function(x) {
+  any(vapply(edge_attr(x), is.sfc, FUN.VALUE = logical(1)), na.rm = TRUE)
+}
+
+
+#' Proceed only when edges are spatially explicit
+#'
+#' @param x An object of class \code{\link{sfnetwork}}.
+#'
+#' @param hard Is it a hard requirement, meaning that edges need to be
+#' spatially explicit no matter which network element is active? Defaults to
+#' \code{FALSE}, meaning that the error message will suggest to activate nodes
+#' instead.
+#'
+#' @return Nothing when the edges of x are spatially explicit, an error message
+#' otherwise.
+#'
+#' @noRd
+require_explicit_edges = function(x, hard = FALSE) {
+  if (! has_explicit_edges(x)) {
+    if (hard) {
+      stop(
+        "This call requires spatially explicit edges",
+        call. = FALSE
+      )
+    } else{
+      stop(
+        "This call requires spatially explicit edges when applied to the ",
+        "edges table. Activate nodes first?",
+        call. = FALSE
+      )
+    }
+  }
+}
+
+#' @name geom_colname
+#' @importFrom igraph vertex_attr vertex_attr_names
+#' @noRd
+node_geom_colname = function(x) {
+  col = attr(vertex_attr(x), "sf_column")
+  if (is.null(col)) {
+    # Take the name of the first sfc column.
+    sfc_idx = which(vapply(vertex_attr(x), is.sfc, FUN.VALUE = logical(1)))[1]
+    col = vertex_attr_names(x)[sfc_idx]
+  }
+  col
+}
+
+
+#' @name geom_colname
+#' @importFrom igraph edge_attr edge_attr_names
+#' @noRd
+edge_geom_colname = function(x) {
+  col = attr(edge_attr(x), "sf_column")
+  if (is.null(col) && has_explicit_edges(x)) {
+    # Take the name of the first sfc column.
+    sfc_idx = which(vapply(edge_attr(x), is.sfc, FUN.VALUE = logical(1)))[1]
+    col = edge_attr_names(x)[sfc_idx]
+  }
+  col
+}
+
+
+#' @importFrom sf st_as_sf
+#' @importFrom tibble as_tibble
+#' @importFrom tidygraph as_tbl_graph
+edges_as_sf = function(x, ...) {
+  require_explicit_edges(x)
+  st_as_sf(
+    as_tibble(as_tbl_graph(x), "edges"),
+    agr = edge_agr(x),
+    sf_column_name = edge_geom_colname(x)
+  )
+}
+
+#' @importFrom sf st_as_sf
+#' @importFrom tibble as_tibble
+#' @importFrom tidygraph as_tbl_graph
+nodes_as_sf = function(x, ...) {
+  st_as_sf(
+    as_tibble(as_tbl_graph(x), "nodes"),
+    agr = node_agr(x),
+    sf_column_name = node_geom_colname(x)
+  )
+}
+
+
+#' @importFrom igraph E ends
+#' @importFrom sf st_as_sf st_geometry
+#' @noRd
+edge_boundary_nodes = function(x) {
+  nodes = pull_node_geom(x)
+  id_mat = ends(x, E(x), names = FALSE)
+  id_vct = as.vector(t(id_mat))
+  nodes[id_vct]
+}
+
+
+#' @importFrom igraph E ends
+#' @noRd
+edge_boundary_node_indices = function(x, matrix = FALSE) {
+  ends = ends(x, E(x), names = FALSE)
+  if (matrix) ends else as.vector(t(ends))
+}
+
+
+#' @importFrom sf st_as_sf
+#' @noRd
+edge_boundary_points = function(x) {
+  edges = pull_edge_geom(x)
+  linestring_boundary_points(edges)
+}
+
+edge_boundary_point_indices = function(x, matrix = FALSE) {
+    nodes = pull_node_geom(x)
+    edges = edges_as_sf(x)
+    idxs_lst = st_equals(linestring_boundary_points(edges), nodes)
+    idxs_vct = do.call("c", idxs_lst)
+    # In most networks the location of a node will be unique.
+    # However, this is not a requirement.
+    # There may be cases where multiple nodes share the same geometry.
+    # Then some more processing is needed to find the correct indices.
+    if (length(idxs_vct) != ecount(x) * 2) {
+      n = length(idxs_lst)
+      from = idxs_lst[seq(1, n - 1, 2)]
+      to = idxs_lst[seq(2, n, 2)]
+      p_idxs = mapply(c, from, to, SIMPLIFY = FALSE)
+      n_idxs = mapply(c, edges$from, edges$to, SIMPLIFY = FALSE)
+      find_indices = function(a, b) {
+        idxs = a[a %in% b]
+        if (length(idxs) > 2) b else idxs
+      }
+      idxs_lst = mapply(find_indices, p_idxs, n_idxs, SIMPLIFY = FALSE)
+      idxs_vct = do.call("c", idxs_lst)
+    }
+    if (matrix) t(matrix(idxs_vct, nrow = 2)) else idxs_vct
+}
+
+
+
+# Simplified construction function.
+# Must be sure that nodes and edges together form a valid sfnetwork.
+# ONLY FOR INTERNAL USE!
+
+#' @importFrom tidygraph tbl_graph
+sfnetwork_ = function(nodes, edges = NULL, directed = TRUE) {
+  if (is.sf(edges)) {
+    edges_df = structure(edges, class = setdiff(class(edges), "sf"))
+  } else {
+    edges_df = edges
+  }
+  x_tbg = tbl_graph(nodes, edges_df, directed)
+  if (! is.null(edges)) {
+    edge_geom_colname = attr(edges, "sf_column")
+    edge_agr = attr(edges, "agr")
+  }
+  structure(x_tbg, class = c("sfnetwork", class(x_tbg)))
+}
+
+
+#' Geometry matching
+#'
+#' @param x An object of class \code{\link[sf]{sf}} or \code{\link[sf]{sfc}}.
+#'
+#' @return A numeric vector giving for each feature in x the row number of the
+#' first feature in x that has equal coordinates.
+#'
+#' @importFrom sf st_equals
+#' @noRd
+st_match = function(x) {
+  idxs = do.call("c", lapply(st_equals(x), `[`, 1))
+  match(idxs, unique(idxs))
+}
+```
+
+
+
+test area
+
+
+```{r}
+edge_idxs
+edge_coords
+edge_pts
+typeof(edge_pts)
+```
+
+```{r}
+edge_pts_copy <- edge_pts
+```
+
+```{r}
+
+all_inter_points2
+```
+
+
+```{r}
+
+all_inter = st_intersection(edges)
+all_inter_pts = sf_cast(st_collection_extract(all_inter,"POINT"), to="POINT")
+all_inter_pts
+```
+
+```{r}
+retrieve_intersections = function(edges){
+  # calculate all intersections (caution this may be prohibitive 
+  # on larger nets)
+  # this can in principle be replaced by a rolling window consideration based # on one coordinate dimension (e.g. x) of the network. This requires 
+  # extracting all elements, ordering in x, and selecting the first element 
+  # with x0 and extent dx. one must then only consider all elements with x>x0 # up to x0 + dx (an additional y window can also be applied). one can then 
+  # move to the next ordered element until the list is completed. Worst case 
+  # is n*n time, but likely better. However, for moderate networks the 
+  # built-in functions are likely sufficient ad have been used here.
+  all_intersects = st_intersection(edges)
+  point_intersections = sf_cast(st_collection_extract(all_intersects,"POINT"), to="POINT")
+  agg_pt_intersections = aggregate(point_intersections, by=point_intersections$x, unique, drop=TRUE)
+  distinct_intersections <- agg_pt_intersections %>% distinct()
+  return(distinct_intersections)
+}
+```
+
+```{r}
+inter_pts = retrieve_intersections(edges)
+```
+
+```{r}
+ip = sf_to_df(inter_pts)
+
+```
+
+```{r}
+ip
+```
+
+
+```{r}
+(unique(all_inter_pts$x))
+```
+
+```{r}
+all_inter_pts %>% group_by(all_inter_pts$x)
+```
+
+test aggregation
+```{r}
+myagg = aggregate(all_inter_pts, by=all_inter_pts$x,unique, drop=TRUE)
+```
+
+```{r}
+myagg 
+```
+```{r}
+myagg %>% distinct()
+```
+
+```{r}
+myaggdis <- myagg %>% distinct()
+```
+
+```{r}
+myaggdis
+```
+```{r}
+nvertices=length(myaggdis$geometry)
+nvertices
+```
+
+```{r}
+nvertices=length(myaggdis$geometry)
+for(i in 1:nvertices){
+    pti=myaggdis[i,]$geometry
+    orig=unique(unlist(myaggdis[i,]$origins))
+    for(j in 1:length(orig)){
+      print(i)
+      print(j)
+      l_id = orig[[j]]
+      print(l_id)
+      edge_pts_copy <- insert_intersection(edge_pts_copy, pti, l_id)
+    }
+
+    
+    
+}
+
+
+```
+```{r}
+
+
+pt=myaggdis[10,]$geometry
+pt
+```
+
+```{r}
+edge_pts$x
+nrow(subset(edge_pts,linestring_id==1 & x==pt[[1]][[1]] & y==4))
+```
+```{r}
+ls = st_linestring(rbind(c(edge_pts[1,]$x,edge_pts[1,]$y),c(edge_pts[3,]$x,edge_pts[3,]$y)))
+ls
+```
+
+```{r}
+insert_intersection = function(ed_pts, int_point, line_id) {
+  e_pts <- ed_pts
+  l_pts = subset(e_pts, linestring_id==line_id)
+  ip_x = int_point[[1]][[1]]
+  ip_y = int_point[[1]][[2]]
+  nrow(subset(l_pts, x==ip_x & y==ip_y))
+  if (nrow(subset(l_pts, x==ip_x & y==ip_y)) < 1){   
+    l_p0 = subset(l_pts,is_startpoint==TRUE)
+    l_p0_row = as.numeric(rownames(l_p0))
+    print(l_p0)
+    kk <- l_p0_row
+    w_break <- FALSE
+    while(w_break == FALSE){
+      ls_ps = st_point(c(e_pts[kk,]$x,e_pts[kk,]$y))
+      ls_pe = st_point(c(e_pts[kk+1,]$x,e_pts[kk+1,]$y))
+      ls = st_linestring(rbind(ls_ps,ls_pe))
+      print(ls)
+      ls_ip_intersect = st_intersects(ls,int_point[[1]])
+      print(ls_ip_intersect)
+      if (length(ls_ip_intersect[[1]]) > 0) {
+        insertion = tibble_row(sfg_id=line_id, linestring_id=line_id, x=ip_x,y=ip_y,is_startpoint=FALSE,is_endpoint=FALSE)
+        print(insertion)
+        print(kk)
+        e_pts <- add_row(e_pts, insertion, .after=kk)
+        print(e_pts)
+        w_break=TRUE
+      } else {
+        if (e_pts[kk+1,]$is_endpoint == TRUE){
+          print('no intersection of calculated intersect found with line segments')
+        }
+        w_break=TRUE
+      }
+      kk <- kk+1
+    }
+  ed_pts <- e_pts
+  } else {
+    print('point already existed on edge')
+    #point already existed on edge
+  }
+  ed_pts <- ed_pts
+}
+```
+
+```{r}
+edge_pts_copy
+pt
+edge_pts_copy <- insert_intersections(edge_pts_copy, pt, 17)
+```
+```{r}
+edge_pts_copy
+```
+
+
+
+
+
+```{r}
+edge_pts_copy = edge_pts
+```
+
+```{r}
+pt
+insert_intersections(pt, edge_pts_copy,1)
+```
+
+
+
+
+
+```{r}
+sel = subset(edge_pts, linestring_id ==3)
+sel
+sel_sp = subset(sel,is_startpoint==TRUE)
+sel_sp
+sel_sr = as.numeric(rownames(sel_sp))
+edge_pts[sel_sr +1,]
+a = tibble_row(sfg_id=3, linestring_id=3, x=6,y=2,is_startpoint=FALSE,is_endpoint=FALSE)
+a
+sel %>% add_row(a,.before=7)
+```
+
+```{r}
+all_inter_points = st_cast(st_collection_extract(all_inter,"POINT"),"POINT")
+
+all_inter_points2 = sf_cast(st_collection_extract(all_inter,"POINT"), to ="POINT")
+
+
+```
+
+```{r}
+print(all_inter_points, n=40)
+
+
+```
+
+
+```{r}
+print(all_inter_points2, n=40)
+```
+
+```{r}
+st_collection_extract(all_inter,"POINT")
+```
+
+```{r}
+edge_pts$is_startpoint <- is_startpoint
+```
+
+```{r}
+edge_pts$is_endpoint <- is_endpoint
+```
+
+```{r}
+sel = subset(edge_pts, linestring_id ==3)
+sel
+sel_sp = subset(sel,is_startpoint==TRUE)
+sel_sp
+sel_sr = as.numeric(rownames(sel_sp))
+edge_pts[sel_sr +1,]
+a = tibble_row(sfg_id=3, linestring_id=3, x=6,y=2,is_startpoint=FALSE,is_endpoint=FALSE)
+a
+sel %>% add_row(a,.before=7)
+```
