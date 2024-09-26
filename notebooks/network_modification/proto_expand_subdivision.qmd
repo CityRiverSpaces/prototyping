@@ -21,6 +21,9 @@ library("tibble")
 #library()
 ```
 
+## Toy network
+Create a toy network reflecting intersection scenarios. Based on the `sfnetworks` toy network
+
 ```{r}
 p1 = st_point(c(0, 2))
 p2 = st_point(c(2, 2))
@@ -95,11 +98,102 @@ plot(st_geometry(net, "nodes"), pch = 20, cex = 2, add = TRUE)
 ```
 
 
+function to calculate all intersection of a network given its edges as a dataframe.
+NOTE: a list of line segment ids is returned in the origins field of the returned `distinct_intersections` data frame. These correspond to the edges which intersect at the specified point
+```{r}
+retrieve_intersections = function(edges){
+  # calculate all intersections (caution this may be prohibitive 
+  # on larger nets)
+  # this can in principle be replaced by a rolling window consideration based # on one coordinate dimension (e.g. x) of the network. This requires 
+  # extracting all elements, ordering in x, and selecting the first element 
+  # with x0 and extent dx. one must then only consider all elements with x>x0 # up to x0 + dx (an additional y window can also be applied). one can then 
+  # move to the next ordered element until the list is completed. Worst case 
+  # is n*n time, but likely better. However, for moderate networks the 
+  # built-in functions are likely sufficient ad have been used here.
+  all_intersects = st_intersection(edges)
+  point_intersections = sf_cast(st_collection_extract(all_intersects,"POINT"), to="POINT")
+  agg_pt_intersections = aggregate(point_intersections, by=point_intersections$x, unique, drop=TRUE)
+  distinct_intersections <- agg_pt_intersections %>% distinct()
+  return(distinct_intersections)
+}
+```
+
+
+Function to insert intersection points into the line segments/edges they belong to. Points must be inserted at the right position of the linestring, i.e. its constituent points must be in order. This is achieved by considering all (sub)line segments in order. If the point already exists on the linestring no further action is required.
+
+`ed_pts` Dataframe of edge_points from network
+`int_point` an intersection point (point geometry)
+`line_id` the id of the linestring to be considered
+```{r}
+insert_intersection = function(ed_pts, int_point, line_id) {
+  e_pts <- ed_pts
+  l_pts = subset(e_pts, linestring_id==line_id)
+  ip_x = int_point[[1]][[1]]
+  ip_y = int_point[[1]][[2]]
+  nrow(subset(l_pts, x==ip_x & y==ip_y))
+  if (nrow(subset(l_pts, x==ip_x & y==ip_y)) < 1){   
+    l_p0 = subset(l_pts,is_startpoint==TRUE)
+    l_p0_row = as.numeric(rownames(l_p0))
+    print(l_p0)
+    kk <- l_p0_row
+    w_break <- FALSE
+    while(w_break == FALSE){
+      ls_ps = st_point(c(e_pts[kk,]$x,e_pts[kk,]$y))
+      ls_pe = st_point(c(e_pts[kk+1,]$x,e_pts[kk+1,]$y))
+      ls = st_linestring(rbind(ls_ps,ls_pe))
+      print(ls)
+      ls_ip_intersect = st_intersects(ls,int_point[[1]])
+      print(ls_ip_intersect)
+      if (length(ls_ip_intersect[[1]]) > 0) {
+        insertion = tibble_row(sfg_id=line_id, linestring_id=line_id, x=ip_x,y=ip_y,is_startpoint=FALSE,is_endpoint=FALSE)
+        print(insertion)
+        print(kk)
+        e_pts <- add_row(e_pts, insertion, .after=kk)
+        print(e_pts)
+        w_break=TRUE
+      } else {
+        if (e_pts[kk+1,]$is_endpoint == TRUE){
+          print('no intersection of calculated intersect found with line segments')
+        }
+        w_break=TRUE
+      }
+      kk <- kk+1
+    }
+  ed_pts <- e_pts
+  } else {
+    print('point already existed on edge')
+    #point already existed on edge
+  }
+  ed_pts <- ed_pts
+}
+```
+
+
+Declare `x` to be the network and set boolean for intersection consideration (see below)
 ```{r}
 x=net
 all_intersections_as_nodes=TRUE
 
 ```
+
+## Proto-type `to_spatial_subdivision` with all intersection option
+The following 10 steps constitute the `to_spatial_subdivision` morpher of sfnetworks with alterations to allow subdivision based on ALL intersections instead of only on common interior points. This is achived by calcua=lating all intersections and then inserting them into the respective edges in a orderd manner, thus creating additional internal points. after this procedure the rest of `to_spatial_subdivision` can be applied.
+
+For ease of examination the steps have been separated into cells, but they can simply be combined.
+
+if wrapped in
+
+```{r}
+to_spatial_subdivision_intersect = function(x, all_intersections_as_nodes=FALSE){
+
+}
+```
+
+this should be a drop-in expansion of the original method in sfnetworks.
+
+NOTE: before running these cells run the cell with utility functions from sfnetworks at the end of the notebook.
+
+NOTE: I haven't been able to locate the `%preserve_network_attrs%` infix function. Consequently, while the full fuction works, the last step, outputting a list of the new network, and the old network (with metadata preservation?) as would be expected when supplying the function to a `morph` call fails. This can likely be resolved by forking the full sfnetworks package and implementing and building there.
 
 ```{r}
 require_explicit_edges(x)
@@ -167,7 +261,7 @@ if (all_intersections_as_nodes == TRUE){
 ```
 
 ```{r}
-
+edge_pts
 ```
 
 ```{r}
@@ -190,6 +284,9 @@ has_duplicate = is_duplicate_desc | is_duplicate_asc
 is_split = has_duplicate & !is_boundary
 if (! any(is_split)) return (x)
 ## ================================
+```
+
+```{r}
 # STEP III: DUPLICATE SPLIT POINTS
 # The split points are currently a single interior point in an edge.
 # They will become the endpoint of one edge *and* the startpoint of another.
@@ -205,6 +302,9 @@ reps[is_split] = 2L
 # Create the new coordinate data frame by duplicating split points.
 new_edge_coords = data.frame(lapply(edge_coords, function(i) rep(i, reps)))
 ## ==========================================
+```
+
+```{r}
 # STEP IV: CONSTRUCT THE NEW EDGES GEOMETRIES
 # With the new coords of the edge points we need to recreate linestrings.
 # First we need to know which edge points belong to which *new* edge.
@@ -227,6 +327,9 @@ st_crs(new_edge_geoms) = st_crs(edges)
 st_precision(new_edge_geoms) = st_precision(edges)
 new_edge_coords$edge_id = NULL
 ## ===================================
+```
+
+```{r}
   # STEP V: CONSTRUCT THE NEW EDGE DATA
   # We now have the geometries of the new edges.
   # However, the original edge attributes got lost.
@@ -249,6 +352,9 @@ new_edge_coords$edge_id = NULL
   # Set the new edge geometries as geometries of these new edges.
   st_geometry(new_edges) = new_edge_geoms
   ## ==========================================
+  ```
+
+  ```{r}
   # STEP VI: CONSTRUCT THE NEW NODE GEOMETRIES
   # All split points are now boundary points of new edges.
   # All edge boundaries become nodes in the network.
@@ -258,6 +364,13 @@ new_edge_coords$edge_id = NULL
   st_crs(new_node_geoms) = st_crs(nodes)
   st_precision(new_node_geoms) = st_precision(nodes)
   ## =====================================
+  ```
+
+```{r}
+print(new_node_geoms,n=60)
+```
+
+  ```{r}
   # STEP VII: CONSTRUCT THE NEW NODE DATA
   # We now have the geometries of the new nodes.
   # However, the original node attributes got lost.
@@ -285,6 +398,9 @@ new_edge_coords$edge_id = NULL
   # Set the new node geometries as geometries of these new nodes.
   st_geometry(new_nodes) = new_node_geoms
   ## ==================================================
+  ```
+
+  ```{r}
   # STEP VIII: UPDATE FROM AND TO INDICES OF NEW EDGES
   # Now we updated the node data, the node indices changes.
   # Therefore we need to update the from and to columns of the edges as well.
@@ -297,28 +413,42 @@ new_edge_coords$edge_id = NULL
   new_edges$from = new_node_idxs[is_source]
   new_edges$to = new_node_idxs[!is_source]
   ## =============================
+  ```
+
+  ```{r}
   # STEP IX: UPDATE THE NEW NODES
   # We can now remove the duplicated node geometries from the new nodes data.
   # Then, each location is represented by a single node.
   ## =============================
   new_nodes = new_nodes[!duplicated(new_node_idxs), ]
   ## ============================
+  ```
+
+  ```{r}
   # STEP X: RECREATE THE NETWORK
   # Use the new nodes data and the new edges data to create the new network.
   ## ============================
   # Create new network.
   x_new = sfnetwork_(new_nodes, new_edges, directed = directed)
+  ```
+
+
+NOTE: I haven't been able to locate the `%preserve_network_attrs%` infix function (below). Consequently, while the full fuction works, the last step, outputting a list of the new network, and the old network (with metadata preservation?) as would be expected when supplying the function to a `morph` call fails. This can likely be resolved by forking the full sfnetworks package and implementing and building there.
+  ```{r}
   # Return in a list.
   list(
     subdivision = x_new %preserve_network_attrs% x
   )
 ```
 
+Replot new network
+
 ```{r}
 plot(st_geometry(x_new, "edges"), col = edge_colors(net), lwd = 4)
 plot(st_geometry(x_new, "nodes"), pch = 20, cex = 2, add = TRUE)
 ```
 
+inspect network
 ```{r}
 x_new
 st_as_sf(x_new, "nodes")
@@ -326,7 +456,8 @@ edge_pts
 ```
 
 
-
+## Utility functions and (sub)modules of sfnetworks needed by `to_spatial_subdivision
+running this cell provides the required routines fo the above. NO alterations w.r.t. the sfnetworks version have been introduced
 
 ```{r}
 is.sf = function(x) {
@@ -615,255 +746,3 @@ st_match = function(x) {
 }
 ```
 
-
-
-test area
-
-
-```{r}
-edge_idxs
-edge_coords
-edge_pts
-typeof(edge_pts)
-```
-
-```{r}
-edge_pts_copy <- edge_pts
-```
-
-```{r}
-
-all_inter_points2
-```
-
-
-```{r}
-
-all_inter = st_intersection(edges)
-all_inter_pts = sf_cast(st_collection_extract(all_inter,"POINT"), to="POINT")
-all_inter_pts
-```
-
-```{r}
-retrieve_intersections = function(edges){
-  # calculate all intersections (caution this may be prohibitive 
-  # on larger nets)
-  # this can in principle be replaced by a rolling window consideration based # on one coordinate dimension (e.g. x) of the network. This requires 
-  # extracting all elements, ordering in x, and selecting the first element 
-  # with x0 and extent dx. one must then only consider all elements with x>x0 # up to x0 + dx (an additional y window can also be applied). one can then 
-  # move to the next ordered element until the list is completed. Worst case 
-  # is n*n time, but likely better. However, for moderate networks the 
-  # built-in functions are likely sufficient ad have been used here.
-  all_intersects = st_intersection(edges)
-  point_intersections = sf_cast(st_collection_extract(all_intersects,"POINT"), to="POINT")
-  agg_pt_intersections = aggregate(point_intersections, by=point_intersections$x, unique, drop=TRUE)
-  distinct_intersections <- agg_pt_intersections %>% distinct()
-  return(distinct_intersections)
-}
-```
-
-```{r}
-inter_pts = retrieve_intersections(edges)
-```
-
-```{r}
-ip = sf_to_df(inter_pts)
-
-```
-
-```{r}
-ip
-```
-
-
-```{r}
-(unique(all_inter_pts$x))
-```
-
-```{r}
-all_inter_pts %>% group_by(all_inter_pts$x)
-```
-
-test aggregation
-```{r}
-myagg = aggregate(all_inter_pts, by=all_inter_pts$x,unique, drop=TRUE)
-```
-
-```{r}
-myagg 
-```
-```{r}
-myagg %>% distinct()
-```
-
-```{r}
-myaggdis <- myagg %>% distinct()
-```
-
-```{r}
-myaggdis
-```
-```{r}
-nvertices=length(myaggdis$geometry)
-nvertices
-```
-
-```{r}
-nvertices=length(myaggdis$geometry)
-for(i in 1:nvertices){
-    pti=myaggdis[i,]$geometry
-    orig=unique(unlist(myaggdis[i,]$origins))
-    for(j in 1:length(orig)){
-      print(i)
-      print(j)
-      l_id = orig[[j]]
-      print(l_id)
-      edge_pts_copy <- insert_intersection(edge_pts_copy, pti, l_id)
-    }
-
-    
-    
-}
-
-
-```
-```{r}
-
-
-pt=myaggdis[10,]$geometry
-pt
-```
-
-```{r}
-edge_pts$x
-nrow(subset(edge_pts,linestring_id==1 & x==pt[[1]][[1]] & y==4))
-```
-```{r}
-ls = st_linestring(rbind(c(edge_pts[1,]$x,edge_pts[1,]$y),c(edge_pts[3,]$x,edge_pts[3,]$y)))
-ls
-```
-
-```{r}
-insert_intersection = function(ed_pts, int_point, line_id) {
-  e_pts <- ed_pts
-  l_pts = subset(e_pts, linestring_id==line_id)
-  ip_x = int_point[[1]][[1]]
-  ip_y = int_point[[1]][[2]]
-  nrow(subset(l_pts, x==ip_x & y==ip_y))
-  if (nrow(subset(l_pts, x==ip_x & y==ip_y)) < 1){   
-    l_p0 = subset(l_pts,is_startpoint==TRUE)
-    l_p0_row = as.numeric(rownames(l_p0))
-    print(l_p0)
-    kk <- l_p0_row
-    w_break <- FALSE
-    while(w_break == FALSE){
-      ls_ps = st_point(c(e_pts[kk,]$x,e_pts[kk,]$y))
-      ls_pe = st_point(c(e_pts[kk+1,]$x,e_pts[kk+1,]$y))
-      ls = st_linestring(rbind(ls_ps,ls_pe))
-      print(ls)
-      ls_ip_intersect = st_intersects(ls,int_point[[1]])
-      print(ls_ip_intersect)
-      if (length(ls_ip_intersect[[1]]) > 0) {
-        insertion = tibble_row(sfg_id=line_id, linestring_id=line_id, x=ip_x,y=ip_y,is_startpoint=FALSE,is_endpoint=FALSE)
-        print(insertion)
-        print(kk)
-        e_pts <- add_row(e_pts, insertion, .after=kk)
-        print(e_pts)
-        w_break=TRUE
-      } else {
-        if (e_pts[kk+1,]$is_endpoint == TRUE){
-          print('no intersection of calculated intersect found with line segments')
-        }
-        w_break=TRUE
-      }
-      kk <- kk+1
-    }
-  ed_pts <- e_pts
-  } else {
-    print('point already existed on edge')
-    #point already existed on edge
-  }
-  ed_pts <- ed_pts
-}
-```
-
-```{r}
-edge_pts_copy
-pt
-edge_pts_copy <- insert_intersections(edge_pts_copy, pt, 17)
-```
-```{r}
-edge_pts_copy
-```
-
-
-
-
-
-```{r}
-edge_pts_copy = edge_pts
-```
-
-```{r}
-pt
-insert_intersections(pt, edge_pts_copy,1)
-```
-
-
-
-
-
-```{r}
-sel = subset(edge_pts, linestring_id ==3)
-sel
-sel_sp = subset(sel,is_startpoint==TRUE)
-sel_sp
-sel_sr = as.numeric(rownames(sel_sp))
-edge_pts[sel_sr +1,]
-a = tibble_row(sfg_id=3, linestring_id=3, x=6,y=2,is_startpoint=FALSE,is_endpoint=FALSE)
-a
-sel %>% add_row(a,.before=7)
-```
-
-```{r}
-all_inter_points = st_cast(st_collection_extract(all_inter,"POINT"),"POINT")
-
-all_inter_points2 = sf_cast(st_collection_extract(all_inter,"POINT"), to ="POINT")
-
-
-```
-
-```{r}
-print(all_inter_points, n=40)
-
-
-```
-
-
-```{r}
-print(all_inter_points2, n=40)
-```
-
-```{r}
-st_collection_extract(all_inter,"POINT")
-```
-
-```{r}
-edge_pts$is_startpoint <- is_startpoint
-```
-
-```{r}
-edge_pts$is_endpoint <- is_endpoint
-```
-
-```{r}
-sel = subset(edge_pts, linestring_id ==3)
-sel
-sel_sp = subset(sel,is_startpoint==TRUE)
-sel_sp
-sel_sr = as.numeric(rownames(sel_sp))
-edge_pts[sel_sr +1,]
-a = tibble_row(sfg_id=3, linestring_id=3, x=6,y=2,is_startpoint=FALSE,is_endpoint=FALSE)
-a
-sel %>% add_row(a,.before=7)
-```
