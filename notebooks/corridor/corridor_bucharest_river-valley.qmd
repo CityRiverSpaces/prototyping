@@ -1,0 +1,299 @@
+---
+title: "Corridor edges"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library("dplyr")
+library("here")
+library("leaflet")
+library("lwgeom")
+library("sf")
+library("sfnetworks")
+library("tidygraph")
+library("units")
+```
+
+In this notebooks we explore how to delineate river corridor edges using Bucharest as the study area, and focusing on one of its rivers (*Dâmbovița*):
+
+```{r}
+city_name <- "Bucharest"
+river_name <- "Dâmbovița"
+
+data_dir <- here("data/generated")
+```
+
+We define a couple of utility functions:
+
+```{r}
+# get geometry in lat/lon (WGS84)
+get_geom_latlon <- function(x) st_transform(x, 4326) |> st_geometry()
+
+# extract nodes and edges from a sfnetwork object
+get_nodes <- function(net) net |> activate("nodes") |> st_geometry()
+get_edges <- function(net) net |> activate("edges") |> st_geometry()
+```
+
+
+## 1. Input data ----
+
+We load the OSM data that we have previously downloaded (see notebook [`download-OSM-data_bucharest.qmd`](./download-OSM-data_bucharest.qmd)):
+
+```{r}
+load_data <- function(dir, handle, name) {
+    file_name <- sprintf("%s/%s_%s.gpkg", dir, handle, name)
+    st_read(file_name, quiet = TRUE)
+}
+
+city_boundary <- load_data(data_dir, "city_boundary", city_name)
+water <- load_data(data_dir, "waterway", river_name)
+highways <- load_data(data_dir, "highways", city_name)
+railways <- load_data(data_dir, "railways", city_name)
+
+# the "water" object includes the waterway (linestring)
+# and the water body (polygon) geometrues
+waterway <- water[1,] |> st_geometry()
+waterbody <- water[2,] |> st_geometry()
+```
+
+We also load in the river valley edges, as computed from the DEM (see notebook [`river-valley_bucharest.qmd`](../river-valley/river-valley_bucharest.qmd)):
+
+```{r}
+valley <- load_data(data_dir, "valley", river_name)
+```
+
+Visualize input data:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = city_boundary |> get_geom_latlon(), color = "yellow", group = "city") |>
+    addPolygons(data = valley |> get_geom_latlon(), color = "orange", group = "valley") |>
+    addPolylines(data = waterway |> get_geom_latlon(), color = "blue", group = "water") |>
+    addPolygons(data = waterbody |> get_geom_latlon(), color = "cyan", group = "water") |>
+    addPolylines(data = highways |> get_geom_latlon(), color = "black", group = "highways") |>
+    addPolylines(data = railways |> get_geom_latlon(), color = "red", group = "railways") |>
+    addLayersControl(overlayGroups = c("city", "valley", "water", "highways", "railways"))
+```
+
+## 2. Street network ----
+
+We use the highway geometries to create the street network using `sfnetworks`:
+
+```{r}
+network <- highways |>
+    as_sfnetwork(directed = FALSE)
+```
+
+We perform standard cleaning tasks on the network:
+
+```{r}
+# Simplify the graph, removing loops and double-edge connections
+# https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#simplify-network
+simplify <- function(net){
+    net|>
+        activate("edges") |>
+        # reorder the edges so that the shortest is kept
+        arrange(edge_length()) |>
+        filter(!edge_is_multiple()) |>
+        filter(!edge_is_loop())
+}
+
+clean <- function(net){
+    net |>
+        # subdivide edges by adding missing nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
+        convert(to_spatial_subdivision, .clean = TRUE) |>
+        # remove pseudo-nodes
+        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
+        convert(to_spatial_smooth, .clean = TRUE) |>
+        # run simplification steps
+        simplify() |>
+        # keep only the main connected component of the network
+        activate("nodes") |>
+        filter(group_components() == 1)
+}
+
+network_cleaned <- clean(network)
+```
+
+Visualize cleaned network:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = network_cleaned |> get_edges() |> get_geom_latlon(), color = "black") |>
+    addCircles(data = network_cleaned |> get_nodes() |> get_geom_latlon(), color = "red")
+```
+
+
+## 3. Corridor edge delineation ----
+
+We carry out the delineation of the river corridor in few steps.
+
+First, we consider the nodes of the network within the area of interest (here defined using the bounding box of the city) and label them according to which side of the river they fall on:
+
+```{r}
+# split polygon in two fragments using the waterway geometry as dividing line
+# if more than two fragments are obtained, keep only the two largest fragments
+split_river_sides <- function(polygon, waterway){
+    # split polygons into fragments using waterway
+    fragments <- st_as_sf(polygon) |>
+        st_split(st_geometry(waterway)) |>
+        st_collection_extract()
+
+    # sort fragments according to area
+    fragments_sorted <- fragments |>
+        mutate(area = st_area(fragments)) |>
+        arrange(-area)  # descending order
+
+    # pick the two largest fragments
+    st_geometry(fragments_sorted[1:2,])
+}
+```
+
+```{r}
+# determine area of interest: city bounding box
+bbox_polygon <- city_boundary |>
+    st_bbox() |>
+    st_as_sfc()
+
+# split the area of interest in the two river sides
+river_sides <- split_river_sides(bbox_polygon, waterway)
+
+# label nodes with side of the river they fall on
+network_classified <- network_cleaned |>
+    activate("nodes") |>
+    mutate(side_1 = node_intersects(river_sides[1,])) |>
+    mutate(side_2 = node_intersects(river_sides[2,]))
+```
+
+We then define the river segment of interest, finding its end points as the intersections between the waterway and the area of interest (the bounding box of the city):
+
+```{r}
+end_points <- bbox_polygon |>
+    st_boundary() |>
+    st_intersection(waterway) |>
+    st_cast("POINT")
+```
+
+We find the nodes of the network that lay closest to these end points, for each side of the waterway:
+
+```{r}
+# find nodes in network on a given side of the river that are closest to target points
+get_nearest_nodes <- function(net, target_points, side){
+    nodes <- net |>
+        activate("nodes") |>
+        filter(get({{side}})) |>
+        get_nodes()
+    idx <- st_nearest_feature(target_points, nodes)
+    nodes[idx]
+}
+
+end_points_side_1 <- get_nearest_nodes(network_classified, end_points, "side_1")
+end_points_side_2 <- get_nearest_nodes(network_classified, end_points, "side_2")
+```
+
+We then define the initial guesses for the corridor edges by splitting the valley boundary (as determined from the DEM) in two segments using the waterway as dividing line:
+
+```{r}
+# split valley boundary in two segments
+edges_initial <- split_river_sides(valley, waterway) |>
+    st_boundary() |>
+    st_difference(waterway)
+
+# find out which segment is on which side of the river
+mask <- st_intersects(river_sides, edges_initial, sparse = FALSE)
+edge_side_1 <- edges_initial[mask[1,]]
+edge_side_2 <- edges_initial[mask[2,]]
+names(edge_side_1) <- "side_1"
+names(edge_side_2) <- "side_2"
+```
+
+We add weights to the network edges. These weights are used at a later stage to find the optimal paths connecting the end points on each side of the waterway. The weights account for the following elements:
+- the lenght of the edge: we want to favour shorter paths over longer ones;
+- the distance between the edge and the initial guess of the corridor boundary: we look for paths that lay as close as possible to the initial guess of the corridor.
+- whether an edge is contained within the initial guess of the corridor: we add a "penalty" cost to edges that fall within the corridor.
+The weight assigned to each edge is a linear combination of these components - coefficients so far are arbitrarily defined!
+
+```{r}
+# add edge weights to the network, accounting for the combined effect of the
+# edge length, distance from a give geometry, intersection with a buffer region
+add_weights <- function(net, geom, buffer){
+    edges <- get_edges(net)
+    distances <- st_distance(edges, geom, which = "Euclidean")
+    # the following is very slow, use approximate (faster) approach
+    # is_inside <- edges |>
+        # st_covered_by(buffer, sparse = FALSE)
+    is_inside <- edges |>
+        st_centroid() |>
+        st_intersects(buffer, sparse = FALSE)
+    # convert this to numeric values, and assign it a fictitious
+    # unit in order to be able to combine it with the other commpondents
+    # of the weight
+    is_inside <- as.numeric(is_inside) |> set_units(m)
+    name <- sprintf("weight_%s", names(geom))
+    net |>
+        activate("edges") |>
+        mutate("{name}" := 1. * edge_length() + 1. * distances + 1000. * is_inside)
+}
+
+network_weights <- network_classified |>
+    add_weights(edge_side_1, valley) |>
+    add_weights(edge_side_2, valley)
+```
+
+As a final network preparation step, we drop the edges that cross the waterway. This is to avoid that the shortest-path solutions cross the river:
+
+```{r}
+not_intersects <- function(x, y) !st_intersects(x, y)
+
+network_split <- network_weights  |>
+    activate("edges") |>
+    st_filter(waterway, .predicate = not_intersects) |>
+    activate("nodes") |>
+    filter(!node_is_isolated())
+```
+
+TODO: is enough to drop isolated nodes, or should we check for the largest group components?
+
+We then run the shortest-path algorithm on the prepared network, using the sets of end points that we have previously defined:
+
+```{r}
+get_corridor_edge <- function(net, end_points, weight_name = "weight"){
+    paths <- st_network_paths(
+        net,
+        from = end_points[1],
+        to = end_points[2],
+        weights = weight_name,
+        type = "shortest",
+    )
+
+    edges <- get_edges(net)
+    edge_path <- paths |> pull(edge_paths) |> unlist()
+    edges[edge_path]
+}
+
+corridor_edge_1 <- get_corridor_edge(network_split, end_points_side_1,  weight_name = "weight_side_1")
+corridor_edge_2 <- get_corridor_edge(network_split, end_points_side_2,  weight_name = "weight_side_2")
+```
+
+### 3.4 Visualize
+
+We visualize the computed corridor edges:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = network_split |> get_edges() |> get_geom_latlon(), color = "black") |>
+    addCircles(data = network_split |> get_nodes() |> get_geom_latlon(), color = "red") |>
+    addPolylines(data = edge_side_1 |> get_geom_latlon(), color = "blue") |>
+    addPolylines(data = edge_side_2 |> get_geom_latlon(), color = "green") |>
+    addCircles(data = end_points_side_1 |> get_geom_latlon(), radius = 50, color = "blue") |>
+    addCircles(data = end_points_side_2 |> get_geom_latlon(), radius = 50, color = "green") |>
+    addPolylines(data = corridor_edge_1 |> get_geom_latlon(), color = "blue", weight = 10) |>
+    addPolylines(data = corridor_edge_2 |> get_geom_latlon(), color = "green", weight = 10)
+```
