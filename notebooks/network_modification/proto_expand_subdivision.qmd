@@ -112,7 +112,7 @@ retrieve_intersections = function(edges){
   # built-in functions are likely sufficient ad have been used here.
   all_intersects = st_intersection(edges)
   point_intersections = sf_cast(st_collection_extract(all_intersects,"POINT"), to="POINT")
-  agg_pt_intersections = aggregate(point_intersections, by=point_intersections$x, unique, drop=TRUE)
+  agg_pt_intersections = aggregate(point_intersections, by=st_geometry(point_intersections), unique, drop=TRUE)
   distinct_intersections <- agg_pt_intersections %>% distinct()
   return(distinct_intersections)
 }
