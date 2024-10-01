@@ -154,8 +154,8 @@ insert_intersection = function(ed_pts, int_point, line_id) {
       } else {
         if (e_pts[kk+1,]$is_endpoint == TRUE){
           print('no intersection of calculated intersect found with line segments')
+          w_break=TRUE
         }
-        w_break=TRUE
       }
       kk <- kk+1
     }
