@@ -26,15 +26,11 @@ river_name <- "Dâmbovița"
 data_dir <- here("data/generated")
 ```
 
-We define a couple of utility functions:
+We define a utility function for visualization:
 
 ```{r}
 # get geometry in lat/lon (WGS84)
 get_geom_latlon <- function(x) st_transform(x, 4326) |> st_geometry()
-
-# extract nodes and edges from a sfnetwork object
-get_nodes <- function(net) net |> activate("nodes") |> st_geometry()
-get_edges <- function(net) net |> activate("edges") |> st_geometry()
 ```
 
 
@@ -50,8 +46,6 @@ load_data <- function(dir, handle, name) {
 
 city_boundary <- load_data(data_dir, "city_boundary", city_name)
 water <- load_data(data_dir, "waterway", river_name)
-highways <- load_data(data_dir, "highways", city_name)
-railways <- load_data(data_dir, "railways", city_name)
 
 # the "water" object includes the waterway (linestring)
 # and the water body (polygon) geometrues
@@ -59,7 +53,16 @@ waterway <- water[1,] |> st_geometry()
 waterbody <- water[2,] |> st_geometry()
 ```
 
-We also load in the river valley edges, as computed from the DEM (see notebook [`river-valley_bucharest.qmd`](../river-valley/river-valley_bucharest.qmd)):
+We also load in the nodes and edges of the pre-clean network, obtained by merging the highway and railway networks (see notebook [`clean-network_bucharest.qmd`](./clean-network_bucharest.qmd)):
+
+```{r}
+nodes <- load_data(data_dir, "network_nodes", city_name)
+edges <- load_data(data_dir, "network_edges", city_name)
+
+network <- sfnetwork(nodes = nodes, edges = edges, directed = FALSE, force = TRUE)
+```
+
+Finally, we load in the river valley edges, as computed from the DEM (see notebook [`river-valley_bucharest.qmd`](../river-valley/river-valley_bucharest.qmd)):
 
 ```{r}
 valley <- load_data(data_dir, "valley", river_name)
@@ -74,63 +77,12 @@ leaflet() |>
     addPolygons(data = valley |> get_geom_latlon(), color = "orange", group = "valley") |>
     addPolylines(data = waterway |> get_geom_latlon(), color = "blue", group = "water") |>
     addPolygons(data = waterbody |> get_geom_latlon(), color = "cyan", group = "water") |>
-    addPolylines(data = highways |> get_geom_latlon(), color = "black", group = "highways") |>
-    addPolylines(data = railways |> get_geom_latlon(), color = "red", group = "railways") |>
-    addLayersControl(overlayGroups = c("city", "valley", "water", "highways", "railways"))
+    addPolylines(data = network |> activate("edges") |> get_geom_latlon(), color = "black", group = "network") |>
+    addCircles(data = network |> activate("nodes") |> get_geom_latlon(), color = "red", group = "network") |>
+    addLayersControl(overlayGroups = c("city", "valley", "water", "network"))
 ```
 
-## 2. Street network ----
-
-We use the highway geometries to create the street network using `sfnetworks`:
-
-```{r}
-network <- highways |>
-    as_sfnetwork(directed = FALSE)
-```
-
-We perform standard cleaning tasks on the network:
-
-```{r}
-# Simplify the graph, removing loops and double-edge connections
-# https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#simplify-network
-simplify <- function(net){
-    net|>
-        activate("edges") |>
-        # reorder the edges so that the shortest is kept
-        arrange(edge_length()) |>
-        filter(!edge_is_multiple()) |>
-        filter(!edge_is_loop())
-}
-
-clean <- function(net){
-    net |>
-        # subdivide edges by adding missing nodes
-        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#subdivide-edges
-        convert(to_spatial_subdivision, .clean = TRUE) |>
-        # remove pseudo-nodes
-        # https://luukvdmeer.github.io/sfnetworks/articles/sfn02_preprocess_clean.html#smooth-pseudo-nodes
-        convert(to_spatial_smooth, .clean = TRUE) |>
-        # run simplification steps
-        simplify() |>
-        # keep only the main connected component of the network
-        activate("nodes") |>
-        filter(group_components() == 1)
-}
-
-network_cleaned <- clean(network)
-```
-
-Visualize cleaned network:
-
-```{r}
-leaflet() |>
-    addTiles() |>
-    addPolylines(data = network_cleaned |> get_edges() |> get_geom_latlon(), color = "black") |>
-    addCircles(data = network_cleaned |> get_nodes() |> get_geom_latlon(), color = "red")
-```
-
-
-## 3. Corridor edge delineation ----
+## 2. Corridor edge delineation ----
 
 We carry out the delineation of the river corridor in few steps.
 
@@ -165,7 +117,7 @@ bbox_polygon <- city_boundary |>
 river_sides <- split_river_sides(bbox_polygon, waterway)
 
 # label nodes with side of the river they fall on
-network_classified <- network_cleaned |>
+network_classified <- network |>
     activate("nodes") |>
     mutate(side_1 = node_intersects(river_sides[1,])) |>
     mutate(side_2 = node_intersects(river_sides[2,]))
@@ -188,7 +140,7 @@ get_nearest_nodes <- function(net, target_points, side){
     nodes <- net |>
         activate("nodes") |>
         filter(get({{side}})) |>
-        get_nodes()
+        st_geometry()
     idx <- st_nearest_feature(target_points, nodes)
     nodes[idx]
 }
@@ -223,7 +175,7 @@ The weight assigned to each edge is a linear combination of these components - c
 # add edge weights to the network, accounting for the combined effect of the
 # edge length, distance from a give geometry, intersection with a buffer region
 add_weights <- function(net, geom, buffer){
-    edges <- get_edges(net)
+    edges <- net |> st_as_sf("edges")
     distances <- st_distance(edges, geom, which = "Euclidean")
     # the following is very slow, use approximate (faster) approach
     # is_inside <- edges |>
@@ -272,7 +224,7 @@ get_corridor_edge <- function(net, end_points, weight_name = "weight"){
         type = "shortest",
     )
 
-    edges <- get_edges(net)
+    edges <- net |> st_as_sf("edges") |> st_geometry()
     edge_path <- paths |> pull(edge_paths) |> unlist()
     edges[edge_path]
 }
@@ -288,8 +240,8 @@ We visualize the computed corridor edges:
 ```{r}
 leaflet() |>
     addTiles() |>
-    addPolylines(data = network_split |> get_edges() |> get_geom_latlon(), color = "black") |>
-    addCircles(data = network_split |> get_nodes() |> get_geom_latlon(), color = "red") |>
+    addPolylines(data = network_split |> activate("edges") |> get_geom_latlon(), color = "black") |>
+    addCircles(data = network_split |> activate("nodes") |> get_geom_latlon(), color = "red") |>
     addPolylines(data = edge_side_1 |> get_geom_latlon(), color = "blue") |>
     addPolylines(data = edge_side_2 |> get_geom_latlon(), color = "green") |>
     addCircles(data = end_points_side_1 |> get_geom_latlon(), radius = 50, color = "blue") |>
