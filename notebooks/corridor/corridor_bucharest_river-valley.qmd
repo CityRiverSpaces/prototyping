@@ -249,3 +249,29 @@ leaflet() |>
     addPolylines(data = corridor_edge_1 |> get_geom_latlon(), color = "blue", weight = 10) |>
     addPolylines(data = corridor_edge_2 |> get_geom_latlon(), color = "green", weight = 10)
 ```
+
+### 3.5 Save output
+
+Capping the corridor using the city boundary:
+
+```{r}
+corridor_edges <- st_union(corridor_edge_1, corridor_edge_2)
+
+corridor <- city_boundary |>
+    st_split(corridor_edges) |>
+    st_collection_extract("POLYGON") |>
+    st_as_sf() |>
+    st_filter(waterway, .predicate = st_intersects)
+```
+
+Save output to disk:
+
+```{r}
+file_name <- sprintf("%s/corridor_%s.gpkg", data_dir, river_name)
+st_write(
+    c(st_geometry(corridor), st_union(corridor_edge_1), st_union(corridor_edge_2)),
+    dsn = file_name,
+    append=FALSE,
+    quiet = TRUE,
+)
+```
