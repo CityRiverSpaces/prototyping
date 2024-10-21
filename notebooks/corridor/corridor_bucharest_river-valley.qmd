@@ -239,23 +239,6 @@ corridor_edge_1 <- get_corridor_edge(network_split, end_points_side_1,  weight_n
 corridor_edge_2 <- get_corridor_edge(network_split, end_points_side_2,  weight_name = "weight_side_2")
 ```
 
-### 3.4 Visualize
-
-We visualize the computed corridor edges:
-
-```{r}
-leaflet() |>
-    addTiles() |>
-    addPolylines(data = network_split |> activate("edges") |> get_geom_latlon(), color = "black") |>
-    addCircles(data = network_split |> activate("nodes") |> get_geom_latlon(), color = "red") |>
-    addPolylines(data = edge_side_1 |> get_geom_latlon(), color = "blue") |>
-    addPolylines(data = edge_side_2 |> get_geom_latlon(), color = "green") |>
-    addCircles(data = end_points_side_1 |> get_geom_latlon(), radius = 50, color = "blue") |>
-    addCircles(data = end_points_side_2 |> get_geom_latlon(), radius = 50, color = "green") |>
-    addPolylines(data = corridor_edge_1 |> get_geom_latlon(), color = "blue", weight = 10) |>
-    addPolylines(data = corridor_edge_2 |> get_geom_latlon(), color = "green", weight = 10)
-```
-
 ### Fix deviations
 
 ```{r}
@@ -265,7 +248,7 @@ corridor_edge_2 <- corridor_edge_2 |> st_union()
 names(corridor_edge_1) <- "side_1"
 names(corridor_edge_2) <- "side_2"
 
-network_weights_2 <- network_weights |> 
+network_weights_2 <- network_classified |> 
     add_weights(corridor_edge_1) |> 
     add_weights(corridor_edge_2)
 
@@ -277,6 +260,44 @@ network_split_2 <- network_weights_2  |>
 
 corridor_edge_1_nodev <- get_corridor_edge(network_split_2, end_points_side_1,  weight_name = "weight_side_1")
 corridor_edge_2_nodev <- get_corridor_edge(network_split_2, end_points_side_2,  weight_name = "weight_side_2")
+```
+
+```{r}
+corridor_edge_1_nodev <- corridor_edge_1_nodev |> st_union()
+corridor_edge_2_nodev <- corridor_edge_2_nodev |> st_union()
+
+names(corridor_edge_1_nodev) <- "side_1"
+names(corridor_edge_2_nodev) <- "side_2"
+
+network_weights_3 <- network_classified |> 
+    add_weights(corridor_edge_1_nodev) |> 
+    add_weights(corridor_edge_2_nodev)
+
+network_split_3 <- network_weights_3  |>
+    activate("edges") |>
+    st_filter(waterway, .predicate = not_intersects) |>
+    activate("nodes") |>
+    filter(!node_is_isolated())
+
+corridor_edge_1_nodev_2 <- get_corridor_edge(network_split_3, end_points_side_1,  weight_name = "weight_side_1")
+corridor_edge_2_nodev_2 <- get_corridor_edge(network_split_3, end_points_side_2,  weight_name = "weight_side_2")
+```
+
+### 3.4 Visualize
+
+We visualize the computed corridor edges:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = network_split_2 |> activate("edges") |> get_geom_latlon(), color = "black") |>
+    addCircles(data = network_split_2 |> activate("nodes") |> get_geom_latlon(), color = "red") |>
+    addPolylines(data = edge_side_1 |> get_geom_latlon(), color = "blue") |>
+    addPolylines(data = edge_side_2 |> get_geom_latlon(), color = "green") |>
+    addCircles(data = end_points_side_1 |> get_geom_latlon(), radius = 50, color = "blue") |>
+    addCircles(data = end_points_side_2 |> get_geom_latlon(), radius = 50, color = "green") |>
+    addPolylines(data = corridor_edge_1_nodev |> get_geom_latlon(), color = "blue", weight = 10) |>
+    addPolylines(data = corridor_edge_2_nodev |> get_geom_latlon(), color = "green", weight = 10)
 ```
 
 
