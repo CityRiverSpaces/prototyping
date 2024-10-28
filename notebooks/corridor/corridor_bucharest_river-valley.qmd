@@ -183,13 +183,13 @@ add_weights <- function(net, geom, buffer = NULL) {
     if (!is.null(buffer)) {
         is_inside <- edges |>
             st_centroid() |>
-            st_intersects(buffer, sparse = FALSE) |> 
+            st_intersects(buffer, sparse = FALSE) |>
             as.numeric()
         repellance <- set_units(1000., m) * is_inside
     } else{
         repellance <- set_units(0, m)
     }
-    
+
     # convert this to numeric values, and assign it a fictitious
     # unit in order to be able to combine it with the other commpondents
     # of the weight
@@ -248,8 +248,8 @@ corridor_edge_2 <- corridor_edge_2 |> st_union()
 names(corridor_edge_1) <- "side_1"
 names(corridor_edge_2) <- "side_2"
 
-network_weights_2 <- network_classified |> 
-    add_weights(corridor_edge_1) |> 
+network_weights_2 <- network_classified |>
+    add_weights(corridor_edge_1) |>
     add_weights(corridor_edge_2)
 
 network_split_2 <- network_weights_2  |>
@@ -269,8 +269,8 @@ corridor_edge_2_nodev <- corridor_edge_2_nodev |> st_union()
 names(corridor_edge_1_nodev) <- "side_1"
 names(corridor_edge_2_nodev) <- "side_2"
 
-network_weights_3 <- network_classified |> 
-    add_weights(corridor_edge_1_nodev) |> 
+network_weights_3 <- network_classified |>
+    add_weights(corridor_edge_1_nodev) |>
     add_weights(corridor_edge_2_nodev)
 
 network_split_3 <- network_weights_3  |>
@@ -320,7 +320,7 @@ Save output to disk:
 ```{r}
 file_name <- sprintf("%s/corridor_%s.gpkg", data_dir, river_name)
 st_write(
-    c(st_geometry(corridor), st_union(corridor_edge_1), st_union(corridor_edge_2)),
+    c(st_geometry(corridor), st_union(corridor_edge_1_nodev), st_union(corridor_edge_2_nodev)),
     dsn = file_name,
     append=FALSE,
     quiet = TRUE,
