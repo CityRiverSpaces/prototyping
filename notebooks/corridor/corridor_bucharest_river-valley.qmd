@@ -174,9 +174,20 @@ The weight assigned to each edge is a linear combination of these components - c
 ```{r}
 # add edge weights to the network, accounting for the combined effect of the
 # edge length, distance from a give geometry, intersection with a buffer region
-add_weights <- function(net, geom, buffer = NULL) {
+add_weights <- function(net, geom = NULL, buffer = NULL) {
     edges <- net |> st_as_sf("edges")
-    distances <- st_distance(edges, geom, which = "Euclidean")
+
+    lengths <- st_length(edges)
+    net <- activate(net, "edges") |> mutate(length = lengths)
+
+    if (!is.null(geom)){
+        distances <- st_distance(edges, geom, which = "Euclidean")
+        weight_name <- sprintf("weight_%s", names(geom))
+    } else {
+        distances <- 0.
+        weight_name <- "weight"
+    }
+
     # the following is very slow, use approximate (faster) approach
     # is_inside <- edges |>
         # st_covered_by(buffer, sparse = FALSE)
@@ -193,10 +204,9 @@ add_weights <- function(net, geom, buffer = NULL) {
     # convert this to numeric values, and assign it a fictitious
     # unit in order to be able to combine it with the other commpondents
     # of the weight
-    name <- sprintf("weight_%s", names(geom))
     net |>
         activate("edges") |>
-        mutate("{name}" := 1. * edge_length() + 1. * distances + repellance)
+        mutate("{weight_name}" := lengths + distances + repellance)
 }
 
 network_weights <- network_classified |>
@@ -221,7 +231,7 @@ TODO: is enough to drop isolated nodes, or should we check for the largest group
 We then run the shortest-path algorithm on the prepared network, using the sets of end points that we have previously defined:
 
 ```{r}
-get_corridor_edge <- function(net, end_points, weight_name = "weight"){
+get_shortest_path <- function(net, end_points, weight_name = "weight"){
     paths <- st_network_paths(
         net,
         from = end_points[1],
@@ -232,22 +242,24 @@ get_corridor_edge <- function(net, end_points, weight_name = "weight"){
 
     edges <- net |> st_as_sf("edges") |> st_geometry()
     edge_path <- paths |> pull(edge_paths) |> unlist()
-    edges[edge_path]
+    corridor_edge <- edges[edge_path]
+    if (length(corridor_edge) > 1) {
+        return(st_union(corridor_edge) |> st_line_merge())
+    } else {
+        return(corridor_edge)
+    }
+
 }
 
-corridor_edge_1 <- get_corridor_edge(network_split, end_points_side_1,  weight_name = "weight_side_1")
-corridor_edge_2 <- get_corridor_edge(network_split, end_points_side_2,  weight_name = "weight_side_2")
+corridor_edge_1 <- get_shortest_path(network_split, end_points_side_1,  weight_name = "weight_side_1")
+names(corridor_edge_1) <- "side_1"
+corridor_edge_2 <- get_shortest_path(network_split, end_points_side_2,  weight_name = "weight_side_2")
+names(corridor_edge_2) <- "side_2"
 ```
 
 ### Fix deviations
 
 ```{r}
-corridor_edge_1 <- corridor_edge_1 |> st_union()
-corridor_edge_2 <- corridor_edge_2 |> st_union()
-
-names(corridor_edge_1) <- "side_1"
-names(corridor_edge_2) <- "side_2"
-
 network_weights_2 <- network_classified |>
     add_weights(corridor_edge_1) |>
     add_weights(corridor_edge_2)
@@ -258,17 +270,15 @@ network_split_2 <- network_weights_2  |>
     activate("nodes") |>
     filter(!node_is_isolated())
 
-corridor_edge_1_nodev <- get_corridor_edge(network_split_2, end_points_side_1,  weight_name = "weight_side_1")
-corridor_edge_2_nodev <- get_corridor_edge(network_split_2, end_points_side_2,  weight_name = "weight_side_2")
+corridor_edge_1_nodev <- get_shortest_path(network_split_2, end_points_side_1,  weight_name = "weight_side_1")
+names(corridor_edge_1_nodev) <- "side_1"
+corridor_edge_2_nodev <- get_shortest_path(network_split_2, end_points_side_2,  weight_name = "weight_side_2")
+names(corridor_edge_2_nodev) <- "side_2"
 ```
 
+We run the procedure again to verify the procedure is actually "converged":
+
 ```{r}
-corridor_edge_1_nodev <- corridor_edge_1_nodev |> st_union()
-corridor_edge_2_nodev <- corridor_edge_2_nodev |> st_union()
-
-names(corridor_edge_1_nodev) <- "side_1"
-names(corridor_edge_2_nodev) <- "side_2"
-
 network_weights_3 <- network_classified |>
     add_weights(corridor_edge_1_nodev) |>
     add_weights(corridor_edge_2_nodev)
@@ -279,11 +289,44 @@ network_split_3 <- network_weights_3  |>
     activate("nodes") |>
     filter(!node_is_isolated())
 
-corridor_edge_1_nodev_2 <- get_corridor_edge(network_split_3, end_points_side_1,  weight_name = "weight_side_1")
-corridor_edge_2_nodev_2 <- get_corridor_edge(network_split_3, end_points_side_2,  weight_name = "weight_side_2")
+corridor_edge_1_nodev_2 <- get_shortest_path(network_split_3, end_points_side_1,  weight_name = "weight_side_1")
+corridor_edge_2_nodev_2 <- get_shortest_path(network_split_3, end_points_side_2,  weight_name = "weight_side_2")
 ```
 
-### 3.4 Visualize
+## 4. Capping
+
+```{r}
+# pairs that need to be connected
+end_points_start <- c(end_points_side_1[1], end_points_side_2[1])
+end_points_end <- c(end_points_side_1[2], end_points_side_2[2])
+```
+
+Option 1: we close the corridor's polygon by directly connecting the end points of the corridor edges:
+
+```{r}
+to_linestring <- function(pts) st_union(pts) |> st_cast("LINESTRING")
+to_polygon <- function(...) {
+    c(...) |>
+        st_union() |>
+        st_line_merge() |>
+        st_polygonize() |>
+        st_collection_extract()
+}
+
+edge_3 <- to_linestring(end_points_start)
+edge_4 <- to_linestring(end_points_end)
+corridor <- to_polygon(corridor_edge_1_nodev, corridor_edge_2_nodev, edge_3, edge_4)
+```
+
+Option 2: we close the corridor using the shortest-path method on both ends of the corridor:
+
+```{r}
+edge_3 <- get_shortest_path(network_weights, end_points_start, "length")
+edge_4 <- get_shortest_path(network_weights, end_points_end, "length")
+corridor_network_capped <- to_polygon(corridor_edge_1_nodev, corridor_edge_2_nodev, edge_3, edge_4)
+```
+
+## 5. Visualize
 
 We visualize the computed corridor edges:
 
@@ -297,30 +340,17 @@ leaflet() |>
     addCircles(data = end_points_side_1 |> get_geom_latlon(), radius = 50, color = "blue") |>
     addCircles(data = end_points_side_2 |> get_geom_latlon(), radius = 50, color = "green") |>
     addPolylines(data = corridor_edge_1_nodev |> get_geom_latlon(), color = "blue", weight = 10) |>
-    addPolylines(data = corridor_edge_2_nodev |> get_geom_latlon(), color = "green", weight = 10)
+    addPolylines(data = corridor_edge_2_nodev |> get_geom_latlon(), color = "green", weight = 10) |>
+    addPolygons(data = corridor |> get_geom_latlon(), color = "black", weight = 10) |>
+    addPolygons(data = corridor_network_capped |> get_geom_latlon(), color = "red", weight = 10)
 ```
 
-
-### 3.5 Save output
-
-Capping the corridor using the city boundary:
-
-```{r}
-corridor_edges <- st_union(corridor_edge_1_nodev, corridor_edge_2_nodev)
-
-corridor <- city_boundary |>
-    st_split(corridor_edges) |>
-    st_collection_extract("POLYGON") |>
-    st_as_sf() |>
-    st_filter(waterway, .predicate = st_intersects)
-```
-
-Save output to disk:
+## 6. Save output
 
 ```{r}
 file_name <- sprintf("%s/corridor_%s.gpkg", data_dir, river_name)
 st_write(
-    c(st_geometry(corridor), st_union(corridor_edge_1_nodev), st_union(corridor_edge_2_nodev)),
+    c(st_geometry(corridor_network_capped), corridor_edge_1_nodev, corridor_edge_2_nodev),
     dsn = file_name,
     append=FALSE,
     quiet = TRUE,
