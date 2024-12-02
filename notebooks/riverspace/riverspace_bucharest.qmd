@@ -1,0 +1,184 @@
+---
+title: "River space delineation"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library("dplyr")
+library("here")
+library("leaflet")
+library("lwgeom")
+library("sf")
+
+data_dir <- here("data/generated")
+```
+
+In this notebook we explore how to delineate a river space using River Dâmbovița in Bucharest as the study area:
+
+```{r}
+river_name <- "Dâmbovița"
+```
+
+We define a utility function for visualization:
+
+```{r}
+# get geometry in lat/lon (WGS84)
+get_geom_latlon <- function(x) st_transform(x, 4326) |> st_geometry()
+```
+
+
+
+## 1. Input data ----
+
+We load the OSM data that we have previously downloaded (see notebook [`download-OSM-data_bucharest.qmd`](./download-OSM-data_bucharest.qmd)):
+
+```{r}
+load_data <- function(dir, handle, name) {
+    file_name <- sprintf("%s/%s_%s.gpkg", dir, handle, name)
+    st_read(file_name, quiet = TRUE)
+}
+
+water <- load_data(data_dir, "waterway", river_name)
+waterbody <- water[2,] |> st_geometry()
+
+wateredges <- waterbody |> 
+    st_cast("MULTILINESTRING") |> 
+    st_cast("LINESTRING") |> 
+    st_sfc()
+```
+
+We generate viewpoints from the river edges:
+
+```{r}
+#| label: viewpoints
+viewpoints <- st_line_sample(wateredges, density = 1/50) |> st_cast("POINT")
+```
+
+We also load the buildings:
+
+```{r}
+buildings <- load_data(data_dir, "buildings", river_name) |> st_geometry()
+```
+
+Visualize input data:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = wateredges |> get_geom_latlon(), color = "cyan") |>
+    addCircles(data = viewpoints |> get_geom_latlon(), radius = 1, color = "red") |>
+    addPolylines(data = buildings |> get_geom_latlon(), color = "black")
+```
+
+## 2. River space delineation ----
+
+```{r}
+#| label: isovist
+
+st_isovist <- function(buildings, 
+                       viewpoint, 
+                       # default, a ray every 5 degrees
+                       rayno = 41,     
+                       # default, 100 meters
+                       raydist = 100) {
+
+  
+  maxisovist <- st_buffer(viewpoint, dist = raydist, nQuadSegs = (rayno-1)/4)
+  rayvertices <- st_cast(maxisovist,"POINT")
+
+  buildintersections <- st_intersects(buildings, maxisovist, sparse = FALSE)
+
+  if (!TRUE %in% buildintersections){
+    isovist <- maxisovist
+  } else {
+    rays <- lapply(X = 1:length(rayvertices), 
+                   FUN = \(x) {
+                       pair <- st_combine(c(rayvertices[x],viewpoint))
+                       line <- st_cast(pair, "LINESTRING")
+                       return(line)})
+    rays <- do.call(c, rays)
+    rays <- st_sf(geometry = rays,
+                  id = 1:length(rays))
+    
+    buildsinmaxisovist <- buildings[buildintersections] |> st_union()
+    raysoutsidebuilding <- st_difference(rays, buildsinmaxisovist)
+    
+    # get each ray segment closest to viewpoint
+    multilines <- dplyr::filter(raysoutsidebuilding, st_is(geometry, c("MULTILINESTRING")))
+    multilines_points <- multilines |> st_cast("MULTIPOINT") |> st_cast("POINT")
+    
+    singlelines <- dplyr::filter(raysoutsidebuilding, st_is(geometry, c("LINESTRING")))
+    singlelines_points <- singlelines |> st_cast("POINT")
+    
+    # get furthest vertex of ray segment closest to view point
+    singlelines_end <- singlelines_points  |>  
+      group_by(id) |> 
+      dplyr::slice_tail(n = 2) |>
+      dplyr::slice_head(n = 1) |>
+      summarise(do_union = FALSE, .groups = 'drop') |>
+      st_cast("POINT")
+    
+    multilines_end  <- multilines_points |> 
+      group_by(id) |>
+      dplyr::slice_tail(n = 2) |>
+      dplyr::slice_head(n = 1) |>
+      summarise(do_union = FALSE, .groups = 'drop') |>
+      st_cast("POINT")
+    
+    # Combining vertices, ordering clockwise by ray angle and casting to polygon
+    alllines <- rbind(singlelines_end, multilines_end)
+    alllines <- alllines[order(alllines$id),] 
+    isovist  <- st_cast(st_combine(alllines),"POLYGON")
+  }
+  isovist
+}
+```
+
+```{r}
+isovists <- lapply(X = 1:length(viewpoints), FUN = \(x) {
+  viewpoint <- viewpoints[x]
+  st_isovist(buildings = buildings,
+             viewpoint = viewpoint,
+             rayno = 41,
+             raydist = 100) |> suppressWarnings()
+})
+```
+
+```{r}
+intersecting_buildings <- 
+    buildings[st_intersects(buildings, allisovists, sparse = FALSE)] |> st_union()
+allisovists <- do.call(c, isovists) |> 
+    st_union() |> 
+    st_difference(intersecting_buildings)
+```
+
+Visualize delineated river space:
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = buildings |> get_geom_latlon(), color = "black") |>
+    addPolylines(data = intersecting_buildings |> get_geom_latlon(), color = "purple") |>
+    addPolylines(data = wateredges |> get_geom_latlon(), color = "cyan") |>
+    addCircles(data = viewpoints |> get_geom_latlon(), radius = 1, color = "green") |>
+    addPolylines(data = allisovists |> get_geom_latlon(), color = "red")
+```
+
+
+
+## 3. Saving the output ----
+
+Save output to disk:
+
+```{r}
+file_name <- sprintf("%s/riverspace_%s.gpkg", data_dir, river_name)
+st_write(
+    allisovists,
+    dsn = file_name,
+    append = FALSE,
+    quiet = TRUE,
+)
+```
