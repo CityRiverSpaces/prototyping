@@ -148,11 +148,12 @@ isovists <- lapply(X = 1:length(viewpoints), FUN = \(x) {
 ```
 
 ```{r}
-intersecting_buildings <- 
-    buildings[st_intersects(buildings, allisovists, sparse = FALSE)] |> st_union()
 allisovists <- do.call(c, isovists) |> 
-    st_union() |> 
-    st_difference(intersecting_buildings)
+    st_union() 
+intersecting_buildings <- 
+    buildings[st_intersects(buildings, allisovists, sparse = FALSE)] |> 
+    st_union()
+allisovists <- st_difference(allisovists, intersecting_buildings)
 ```
 
 Visualize delineated river space:
