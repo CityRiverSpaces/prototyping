@@ -1,0 +1,62 @@
+---
+title: "Corridor segments"
+format: html
+---
+
+```{r}
+#| label: setup
+#| message: false
+
+library(sf)
+library(dplyr)
+library(leaflet)
+
+epsg_code <- 32635  # UTM zone 35N
+
+corridor <- st_read("../data/generated/corridor.gpkg")
+waterway <- st_read("../data/generated/waterway.gpkg")
+streets <- st_read("../data/generated/streets.gpkg") |> 
+    filter(highway %in% c("motorway", "primary", "secondary")) |> 
+    st_geometry() |> 
+    st_transform(epsg_code)
+```
+
+A couple of utility functions:
+
+```{r}
+# query the Overpass API for a key:value pair within a given bounding box
+osmdata_as_sf <- function(key, value, bb){
+    bb |>
+        opq() |>
+        add_osm_feature(key = key, value = value) |>
+        osmdata_sf()
+}
+```
+
+```{r}
+# get geometry in lat/lon (WGS84)
+getGeomLatLon <- function(x) st_transform(x, 4326) |> st_geometry()
+```
+
+3. Corridor segments
+
+Get intersections between the main street network and the riverline:
+
+```{r}
+crossings <- st_intersection(streets, waterway)
+```
+
+Note that the segmentation algorithm below can also be used as an alternative to cap the ends of the corridor. In this case, the crossings of the ring road seem to match the original delineation quite well.
+
+```{r}
+leaflet() |>
+    addTiles() |>
+    addPolylines(data = streets |> getGeomLatLon(), color = "black", opacity = 100, weight = 1) |>
+    addPolylines(data = waterway |> getGeomLatLon(), color = "blue") |>
+    addPolylines(data = original_delineation |> getGeomLatLon(), color = "green") |>
+    addPolylines(data = corridor |> getGeomLatLon(), color = "yellow") |>
+    addCircles(data = crossings |> getGeomLatLon(), color = "red", fill = "red", radius = 10)
+```
+
+For the segmentation, we can also try the shortest path algorithm from the main
+
