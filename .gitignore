@@ -53,3 +53,8 @@ venv/
 
 # R projects 
 *.Rproj
+
+# Generated files
+data/generated/
+notebooks/*.html
+notebooks/*files/
